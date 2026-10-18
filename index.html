@@ -127,7 +127,7 @@
   <div id="status">Tap start to begin.</div>
   <div id="bar"><i></i></div>
   <div id="pct"></div>
-  <div id="sub">First run downloads ~1986 MB once and stores it on this device, so every
+  <div id="sub">First run downloads ~1239 MB once and stores it on this device, so every
     later load starts without downloading again.</div>
   <button class="main" id="startBtn">Start</button>
   <div id="notes">
@@ -227,7 +227,7 @@
  * ----------------------------------------------------------------------------
  * Ported from hollowknightgame/ipad.html (HK chunk + log + ladder systems).
  * Loading is done by hk-stream.js:
- *   1. Build files + Addressables WebGL.zip (100 parts ~1986 MB) are streamed
+ *   1. Build files + Addressables WebGL.zip (63 parts ~1239 MB) are streamed
  *      to OPFS (on-device storage) through hk-writer.js — a few MB of RAM,
  *      resumable;
  *   2. the merged files are remembered, so later loads skip the download;
@@ -242,7 +242,7 @@
    * ---------------------------------------------------------------- */
   var PART = 20866662; // size of every chunk except the last one of each file
   var BUILD = {
-    id: 'hksilksong-webgl-2026-10-18', // bump to invalidate old OPFS caches
+    id: 'hksilksong-webgl-2026-10-18-lite', // bump to invalidate old OPFS caches
     buildDir: 'Build/',
     loader: 'Build/w-pt.loader.js',
     framework: 'Build/w-pt.framework.js.unityweb',
@@ -265,8 +265,8 @@
       cacheKey: 'WebGL.zip',
       mime: 'application/octet-stream',
       base: 'StreamingAssets/aa/WebGL.zip',
-      partBytes: new Array(99).fill(PART).concat([17340100]),
-      total: 2083139638,
+      partBytes: new Array(62).fill(PART).concat([5175252]),
+      total: 1298908296,
     },
   };
 
@@ -998,7 +998,7 @@
    * ---------------------------------------------------------------- */
   var sessionStart = 0;
   var heartbeatTimer = 0;
-  var DATA_MB = 1986; // addressables zip + build data
+  var DATA_MB = 1239; // addressables zip + build data
 
   function unityModule() {
     var inst = unityInstance || (typeof window !== 'undefined' ? window.unityInstance : null);
