@@ -1,253 +1,2204 @@
 <!DOCTYPE html>
-<html lang="en-us">
-  <head>
-    <base href="https://cdn.jsdelivr.net/gh/web-ports/hollow-knight-silksong@master/">
-    <meta charset="utf-8">
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Unity Web Player | Hollow Knight SilkSong</title>
-    <link rel="shortcut icon" href="TemplateData/favicon.ico">
-    <link rel="stylesheet" href="TemplateData/style.css">
-  </head>
-  <body>
-    <div id="loading-text" style="color: white; font-size: 48px; font-family: cursive; text-align: center; margin-top: 20px;"> LOADING...</div>
-    <div id="unity-container">
-      <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
-      <div id="unity-loading-bar">
-        <div id="unity-logo"></div>
-        <div id="unity-progress-bar-empty">
-          <div id="unity-progress-bar-full"></div>
-        </div>
-      </div>
-      <div id="unity-warning"> </div>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hollow Knight Silksong">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="format-detection" content="telephone=no">
+<title>Hollow Knight Silksong — Web Port</title>
+<style>
+  :root{
+    --pad-btn: rgba(255,255,255,.16);
+    --pad-btn-active: rgba(255,255,255,.42);
+    --panel: rgba(10,10,14,.92);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{
+    width:100%;height:100%;background:#000;color:#e8e8ef;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+    overscroll-behavior:none;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  }
+  #canvas-wrap{position:fixed;inset:0;display:grid;place-items:center;overflow:hidden;background:#000}
+  #unity-canvas{
+    display:block;background:#000;touch-action:none;outline:none;
+    width:100%;height:100%;transform-origin:50% 50%;
+  }
+
+  /* ---------- loading / start screen ---------- */
+  #screen{
+    position:fixed;inset:0;background:radial-gradient(ellipse at 50% 30%,#14141c 0%,#05050a 70%);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+    padding:max(20px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));
+    text-align:center;z-index:40;
+  }
+  #screen h1{font-size:clamp(26px,6vw,44px);font-weight:300;letter-spacing:.14em;text-transform:uppercase}
+  #screen h1 small{display:block;font-size:12px;letter-spacing:.3em;opacity:.55;margin-top:8px}
+  #status{font-size:clamp(13px,3.4vw,17px);opacity:.9;min-height:1.4em;max-width:48em}
+  #sub{font-size:clamp(11px,2.8vw,13px);opacity:.6;max-width:44em;line-height:1.5}
+  #bar{width:min(78vw,620px);height:10px;border-radius:6px;background:rgba(255,255,255,.12);overflow:hidden}
+  #bar > i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#8ec5ff,#b98cff);transition:width .2s}
+  #pct{font-variant-numeric:tabular-nums;font-size:12px;opacity:.75}
+  button.main{
+    appearance:none;border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.08);
+    color:#fff;font-size:clamp(15px,4vw,18px);letter-spacing:.08em;padding:14px 34px;border-radius:12px;
+    cursor:pointer;text-transform:uppercase;
+  }
+  button.main:active{background:rgba(255,255,255,.22)}
+  #notes{font-size:11px;opacity:.5;line-height:1.6;max-width:40em}
+  .warn{color:#ffd479}
+  .err{color:#ff9d9d;white-space:pre-wrap;word-break:break-word;max-width:44em;text-align:left;font-size:12px}
+  .hidden{display:none !important}
+
+  /* ---------- top-right chips ---------- */
+  #chips{position:fixed;top:calc(8px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));display:flex;gap:6px;z-index:30}
+  .chip{
+    background:rgba(20,20,26,.72);border:1px solid rgba(255,255,255,.16);color:#fff;border-radius:8px;
+    font-size:12px;padding:6px 10px;cursor:pointer;backdrop-filter:blur(6px);font-variant-numeric:tabular-nums
+  }
+  .chip:active{background:rgba(255,255,255,.2)}
+  #fps{min-width:64px;text-align:center}
+
+  /* ---------- diagnostics panel ---------- */
+  #panel{
+    position:fixed;top:calc(48px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));
+    width:min(92vw,420px);max-height:min(70vh,560px);overflow:auto;background:var(--panel);
+    border:1px solid rgba(255,255,255,.18);border-radius:12px;padding:12px;z-index:31;font-size:12px;line-height:1.5
+  }
+  #panel h3{font-size:11px;letter-spacing:.16em;text-transform:uppercase;opacity:.6;margin:10px 0 4px}
+  #panel h3:first-child{margin-top:0}
+  #panel .row{display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px dotted rgba(255,255,255,.08)}
+  #panel .row span:last-child{opacity:.85;text-align:right;word-break:break-all}
+  #panel button{
+    appearance:none;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:#fff;
+    border-radius:8px;padding:7px 10px;font-size:12px;margin:4px 4px 0 0;cursor:pointer
+  }
+  #panel button:active{background:rgba(255,255,255,.22)}
+  #logbox{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;white-space:pre-wrap;word-break:break-word;
+    max-height:170px;overflow:auto;background:rgba(0,0,0,.35);border-radius:8px;padding:8px;margin-top:6px;opacity:.9}
+
+  /* ---------- recovery overlay (context loss / hang) ---------- */
+  #recover{
+    position:fixed;inset:0;z-index:80;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:16px;text-align:center;padding:24px;background:rgba(5,5,10,.94);
+  }
+  #recover h2{font-size:clamp(20px,5vw,30px);font-weight:300;letter-spacing:.1em;text-transform:uppercase}
+  #recover p{font-size:clamp(12px,3.2vw,15px);opacity:.8;max-width:34em;line-height:1.6}
+  #recover .row{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+
+  /* ---------- toast + warn banner ---------- */
+  #toast{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);
+    background:rgba(20,20,26,.92);border:1px solid rgba(255,255,255,.2);border-radius:10px;padding:10px 16px;font-size:13px;
+    z-index:60;opacity:0;transition:opacity .25s;pointer-events:none;max-width:88vw;text-align:center}
+  #toast.show{opacity:1}
+  #bgwarn{position:fixed;top:0;left:0;right:0;background:#5a2b00;color:#ffd479;font-size:12px;padding:6px;text-align:center;z-index:70}
+
+  /* ---------- touch controls ---------- */
+  #pad{position:fixed;inset:0;z-index:25;pointer-events:none;display:none}
+  #pad.on{display:block}
+  #pad .side{position:absolute;bottom:calc(14px + env(safe-area-inset-bottom));display:flex;gap:10px;pointer-events:auto}
+  #pad .left{left:calc(14px + env(safe-area-inset-left))}
+  #pad .right{right:calc(14px + env(safe-area-inset-right))}
+  #pad .cluster{display:grid;gap:10px}
+  #pad .dpad{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr)}
+  #pad button{
+    appearance:none;border:1px solid rgba(255,255,255,.28);background:var(--pad-btn);color:#fff;
+    width:74px;height:74px;border-radius:50%;font-size:15px;font-weight:600;letter-spacing:.02em;
+    display:grid;place-items:center;backdrop-filter:blur(4px);touch-action:none;cursor:pointer
+  }
+  #pad button.small{width:62px;height:62px;font-size:12px}
+  #pad button.held{background:var(--pad-btn-active)}
+  #pad .dpad button{border-radius:14px;width:64px;height:64px}
+  @media (max-height:520px){ #pad button{width:62px;height:62px} #pad .dpad button{width:54px;height:54px} }
+</style>
+</head>
+<body>
+
+<div id="canvas-wrap"><canvas id="unity-canvas" tabindex="-1" aria-label="Hollow Knight Silksong"></canvas></div>
+
+<!-- ================= start / progress screen ================= -->
+<div id="screen">
+  <h1>Hollow Knight<small>Silksong &middot; web port</small></h1>
+  <div id="status">Tap start to begin.</div>
+  <div id="bar"><i></i></div>
+  <div id="pct"></div>
+  <div id="sub">First run downloads ~1986 MB once and stores it on this device, so every
+    later load starts without downloading again.</div>
+  <button class="main" id="startBtn">Start</button>
+  <div id="notes">
+    Keep this tab open and in the foreground while the game loads.<br>
+    On an iPad, switching apps or letting the screen lock can make Safari kill the tab.
+  </div>
+  <div id="err" class="err"></div>
+</div>
+
+<div id="bgwarn" class="hidden">Keep this tab in the foreground or the load may be killed.</div>
+
+<div id="chips">
+  <span class="chip hidden" id="memcap" aria-live="polite"></span>
+  <button class="chip" id="fps">-- fps</button>
+  <button class="chip" id="menuBtn">Menu</button>
+</div>
+
+<div id="toast"></div>
+
+<!-- ================= recovery overlay ================= -->
+<div id="recover" class="hidden">
+  <h2>The game stopped</h2>
+  <p id="recoverMsg"></p>
+  <div class="row">
+    <button class="main" id="recoverBtn">Reload the game</button>
+    <button class="main" id="recoverWait">Keep waiting</button>
+  </div>
+  <p style="opacity:.55;font-size:11px">Progress is saved automatically, so reloading costs at
+    most a short walk back.</p>
+</div>
+
+<!-- ================= touch controls ================= -->
+<div id="pad">
+  <div class="side left">
+    <div class="cluster dpad">
+      <span></span>
+      <button data-key="ArrowUp" aria-label="up">▲</button>
+      <span></span>
+      <button data-key="ArrowLeft" aria-label="left">◀</button>
+      <span></span>
+      <button data-key="ArrowRight" aria-label="right">▶</button>
+      <span></span>
+      <button data-key="ArrowDown" aria-label="down">▼</button>
+      <span></span>
     </div>
-    <script src="jszip.js"></script>
+  </div>
+  <div class="side right">
+    <div class="cluster" style="grid-template-columns:repeat(2,1fr)">
+      <button data-key="z" aria-label="jump">Jump<small style="font-size:10px;opacity:.7">Z</small></button>
+      <button data-key="x" aria-label="attack">Attack<small style="font-size:10px;opacity:.7">X</small></button>
+      <button data-key="c" aria-label="dash" class="small">Dash<small style="font-size:10px;opacity:.7">C</small></button>
+      <button data-key="a" aria-label="focus">Focus<small style="font-size:10px;opacity:.7">A</small></button>
+      <button data-key="d" aria-label="dream nail" class="small">Dream<small style="font-size:10px;opacity:.7">D</small></button>
+      <button data-key="e" aria-label="quick cast" class="small">Cast<small style="font-size:10px;opacity:.7">E</small></button>
+      <button data-key="s" aria-label="super dash" class="small">S.Dash<small style="font-size:10px;opacity:.7">S</small></button>
+      <button data-key="Tab" aria-label="map" class="small">Map<small style="font-size:10px;opacity:.7">Tab</small></button>
+      <button data-key="Escape" aria-label="pause" class="small">Pause<small style="font-size:10px;opacity:.7">Esc</small></button>
+    </div>
+  </div>
+</div>
 
+<!-- ================= diagnostics panel ================= -->
+<input type="file" id="saveFile" class="hidden">
+
+<div id="panel" class="hidden">
+  <h3>Graphics &amp; performance</h3>
+  <div>
+    <button id="perfBtn">Graphics: Balanced</button>
+    <button id="fpsBtn">Frame cap: 60</button>
+    <button id="queueBtn">Render scale: 85%</button>
+    <button id="autoBtn">Auto-degrade: on</button>
+  </div>
+  <div id="perfRows"></div>
+  <h3>Storage</h3>
+  <div id="storeRows"></div>
+  <h3>Settings</h3>
+  <div>
+    <button id="padToggle">Touch controls: off</button>
+    <button id="compatBtn">Compatibility mode: off</button>
+    <button id="exportBtn">Export save</button>
+    <button id="exportDatBtn">Export .dat slot</button>
+    <button id="importBtn">Import save</button>
+    <button id="clearBtn">Clear cached game data</button>
+    <button id="copyBtn">Copy diagnostics</button>
+    <button id="reloadBtn">Reload</button>
+  </div>
+  <h3>Log</h3>
+  <div id="logbox"></div>
+</div>
+
+<script src="jszip.js"></script>
+<script src="hk-stream.js"></script>
+<script src="hk-save-codec.js"></script>
 <script>
-const loadingText = document.querySelector("#loading-text");
-const CACHE_NAME = "hksilksongcache-v2"; // bump version if needed
+/* ============================================================================
+ * Hollow Knight Silksong — iPad/mobile front-end
+ * ----------------------------------------------------------------------------
+ * Ported from hollowknightgame/ipad.html (HK chunk + log + ladder systems).
+ * Loading is done by hk-stream.js:
+ *   1. Build files + Addressables WebGL.zip (100 parts ~1986 MB) are streamed
+ *      to OPFS (on-device storage) through hk-writer.js — a few MB of RAM,
+ *      resumable;
+ *   2. the merged files are remembered, so later loads skip the download;
+ *   3. Addressables zip is extracted once to Cache API and served via fetch
+ *      override; Unity gets ONE file-backed blob URL for data/wasm.
+ * ==========================================================================*/
+(function () {
+  'use strict';
 
-/* ================= FETCH OVERRIDE ================= */
-const originalFetch = window.fetch;
+  /* ---------------------------------------------------------------- *
+   * Build description (must match the Build/ folder + StreamingAssets)
+   * ---------------------------------------------------------------- */
+  var PART = 20866662; // size of every chunk except the last one of each file
+  var BUILD = {
+    id: 'hksilksong-webgl-2026-10-18', // bump to invalidate old OPFS caches
+    buildDir: 'Build/',
+    loader: 'Build/w-pt.loader.js',
+    framework: 'Build/w-pt.framework.js.unityweb',
+    streamingAssets: 'StreamingAssets/',
+    data: {
+      cacheKey: 'w-pt.data.unityweb',
+      mime: 'application/octet-stream',
+      file: 'Build/w-pt.data.unityweb',
+      partBytes: [15288449],
+      total: 15288449,
+    },
+    wasm: {
+      cacheKey: 'w-pt.wasm.unityweb',
+      mime: 'application/wasm',
+      file: 'Build/w-pt.wasm.unityweb',
+      partBytes: [20192325],
+      total: 20192325,
+    },
+    aa: {
+      cacheKey: 'WebGL.zip',
+      mime: 'application/octet-stream',
+      base: 'StreamingAssets/aa/WebGL.zip',
+      partBytes: new Array(99).fill(PART).concat([17340100]),
+      total: 2083139638,
+    },
+  };
 
-window.fetch = async function(resource, options) {
-  let url = typeof resource === "string" ? resource : resource.url;
-  let cleanPath = url.split("/").pop();
+  var FALLBACK_BASE = 'https://cdn.jsdelivr.net/gh/web-ports/hollow-knight-silksong@master/';
+  var params = new URLSearchParams(location.search);
+  var ASSET_BASE = params.get('base') || '';
+  var useRewriter = false;
 
-  const cache = await caches.open(CACHE_NAME);
+  /* ---------------------------------------------------------------- *
+   * Small helpers
+   * ---------------------------------------------------------------- */
+  var $ = function (id) { return document.getElementById(id); };
+  var screenEl = $('screen'), statusEl = $('status'), barEl = $('bar').firstElementChild,
+      pctEl = $('pct'), subEl = $('sub'), errEl = $('err'), notesEl = $('notes'),
+      startBtn = $('startBtn'), bgWarn = $('bgwarn'), toastEl = $('toast'),
+      panelEl = $('panel'), logBox = $('logbox'), fpsEl = $('fps'), memCapEl = $('memcap'), padEl = $('pad');
 
-  const cachedResponse = await cache.match(cleanPath);
-  if (cachedResponse) {
-    return cachedResponse;
+  var logLines = [];
+  function log() {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) {
+      var a = arguments[i];
+      parts.push(typeof a === 'string' ? a : safeJson(a));
+    }
+    var line = new Date().toISOString().substr(11, 8) + '  ' + parts.join(' ');
+    logLines.push(line);
+    if (logLines.length > 400) logLines.shift();
+    if (logBox) logBox.textContent = logLines.slice(-160).join('\n');
+    console.log('[hk]', parts.join(' '));
+  }
+  function logError() {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
+    log('ERROR ' + parts.join(' '));
+  }
+  function safeJson(o) {
+    try { return JSON.stringify(o); } catch (e) { return String(o); }
+  }
+  function mb(b) { return (b / 1048576).toFixed(1) + ' MB'; }
+  var toastTimer = 0;
+  function toast(msg, ms) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, ms || 4000);
+  }
+  function setStatus(text) { statusEl.textContent = text; }
+  function setProgress(fraction, label) {
+    if (typeof fraction === 'number') barEl.style.width = Math.max(0, Math.min(1, fraction)) * 100 + '%';
+    pctEl.textContent = label || '';
+  }
+  function abs(url) { return ASSET_BASE ? ASSET_BASE.replace(/\/$/, '') + '/' + url : url; }
+
+  /* ---------------------------------------------------------------- *
+   * Crash watchdog
+   * ---------------------------------------------------------------- */
+  var lastMark = { stage: '', at: 0 };
+  function markStage(stage) {
+    var t = Date.now();
+    if (stage === lastMark.stage && t - lastMark.at < 4000) return;
+    lastMark = { stage: stage, at: t };
+    try { localStorage.setItem('hk.stage', JSON.stringify({ stage: stage, at: t })); } catch (e) {}
+  }
+  function clearStage() {
+    try { localStorage.removeItem('hk.stage'); } catch (e) {}
+  }
+  function lastStage() {
+    try { return JSON.parse(localStorage.getItem('hk.stage') || 'null'); } catch (e) { return null; }
   }
 
-  return originalFetch(resource, options);
-};
-
-/* ================= CACHE CHECK ================= */
-async function isCached() {
-  const cache = await caches.open(CACHE_NAME);
-  const done = await cache.match("CACHE_COMPLETE");
-  return !!done;
-}
-
-async function cleanupOldCaches() {
-  const cacheNames = await caches.keys();
-
-  await Promise.all(
-    cacheNames.map(name => {
-      if (name !== CACHE_NAME && name.includes("hksilksong")) {
-        console.log("Deleting old cache:", name);
-        return caches.delete(name);
-      }
-    })
-  );
-}
-
-/* ================= UNZIP ================= */
-async function unzipAndStore(zipBlob) {
-  if (!zipBlob) {
-    throw new Error("ZIP is missing");
+  /* ---------------------------------------------------------------- *
+   * Asset base
+   * ---------------------------------------------------------------- */
+  async function resolveAssetBase() {
+    try {
+      var head = await fetch(abs('StreamingAssets/aa/catalog.hash'), { method: 'HEAD', cache: 'no-store' });
+      if (head && head.ok) return;
+    } catch (e) { /* fall through */ }
+    if (!ASSET_BASE) {
+      ASSET_BASE = FALLBACK_BASE;
+      useRewriter = true;
+      log('local assets not found next to this page — using ' + ASSET_BASE);
+    }
   }
 
-  loadingText.textContent = "EXTRACTING ASSETS...";
-
-  const zip = await JSZip.loadAsync(zipBlob);
-  const files = Object.values(zip.files).filter(f => !f.dir);
-  const total = files.length;
-
-  const cache = await caches.open(CACHE_NAME);
-
-  let processed = 0;
-  const batchSize = 10;
-
-  for (let i = 0; i < files.length; i += batchSize) {
-    const batch = files.slice(i, i + batchSize);
-
-    await Promise.all(batch.map(async (file) => {
+  function installUrlRewriter() {
+    if (!useRewriter) return;
+    var known = /^(Build\/|StreamingAssets\/|sharedassets|w-pt)/;
+    var origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
       try {
-        const blob = await file.async("blob");
-        await cache.put(file.name, new Response(blob));
-      } catch (e) {
-        console.error("Failed:", file.name, e);
-      }
-
-      processed++;
-      loadingText.textContent =
-        `EXTRACTING ASSETS... (${processed}/${total})`;
-    }));
-
-    await new Promise(r => setTimeout(r, 0));
+        if (typeof input === 'string' && known.test(input) && !/^[a-z]+:/i.test(input)) input = abs(input);
+      } catch (e) {}
+      return origFetch(input, init);
+    };
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      var args = Array.prototype.slice.call(arguments);
+      try {
+        if (typeof url === 'string' && known.test(url) && !/^[a-z]+:/i.test(url)) args[1] = abs(url);
+      } catch (e) {}
+      return origOpen.apply(this, args);
+    };
+    log('URL rewriter installed for the fallback asset host');
   }
 
-  // ✅ mark cache complete
-  await cache.put("CACHE_COMPLETE", new Response("ok"));
+  /* ---------------------------------------------------------------- *
+   * Addressables: Cache API serving of extracted bundles
+   * ---------------------------------------------------------------- */
+  var CACHE_NAME = "hksilksongcache-v2";
+  var aaExtracted = false;
 
-  console.log("Cache complete");
-}
-
-/* ================= DOWNLOAD ================= */
-let loadedBytes = 0;
-
-async function fetchWithProgress(url) {
-  const response = await originalFetch(url);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch: " + url);
+  async function isAaCached() {
+    try {
+      var cache = await caches.open(CACHE_NAME);
+      var done = await cache.match("CACHE_COMPLETE");
+      return !!done;
+    } catch (e) { return false; }
   }
 
-  const reader = response.body.getReader();
-  let chunks = [];
-  let received = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    received += value.length;
-    loadedBytes += value.length;
-    chunks.push(value);
-
-    let mbDone = (loadedBytes / (1024 * 1024)).toFixed(2);
-    let mbTotal = '1986.64';
-
-    loadingText.textContent =
-      `DOWNLOADING ASSETS... (${mbDone} MB / ${mbTotal} MB)`;
-  }
-
-  let fullBuffer = new Uint8Array(received);
-  let offset = 0;
-
-  for (let chunk of chunks) {
-    fullBuffer.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return fullBuffer.buffer;
-}
-
-/* ================= MERGE ================= */
-async function mergeFiles(parts) {
-  console.log("Downloading parts:", parts.length);
-
-  const buffers = await Promise.all(
-    parts.map(part => fetchWithProgress(part))
-  );
-
-  return new Blob(buffers);
-}
-
-/* ================= UTIL ================= */
-function getParts(file, start, end) {
-  let parts = [];
-  for (let i = start; i <= end; i++) {
-    parts.push(file + ".part" + i);
-  }
-  return parts;
-}
-
-/* ================= MAIN ================= */
-(async () => {
-  try {
-    await cleanupOldCaches(); 
-    if (!(await isCached())) {
-      loadingText.textContent = "DOWNLOADING ASSETS...";
-
-      const webglzip = await mergeFiles(
-        getParts("StreamingAssets/aa/WebGL.zip", 1, 100)
-      );
-
-      await unzipAndStore(webglzip);
-    } else {
-      loadingText.textContent = "LOADING FROM CACHE...";
-    }
-
-    /* ================= UNITY START ================= */
-    const canvas = document.querySelector("#unity-canvas");
-    const loadingBar = document.querySelector("#unity-loading-bar");
-    const progressBarFull = document.querySelector("#unity-progress-bar-full");
-    const warningBanner = document.querySelector("#unity-warning");
-
-    function unityShowBanner(msg, type) {
-      function update() {
-        warningBanner.style.display =
-          warningBanner.children.length ? 'block' : 'none';
-      }
-
-      let div = document.createElement('div');
-      div.innerHTML = msg;
-      warningBanner.appendChild(div);
-
-      if (type == 'error') {
-        div.style = 'background:red;padding:10px;';
-      } else {
-        if (type == 'warning') {
-          div.style = 'background:yellow;padding:10px;';
+  async function cleanupOldCaches() {
+    try {
+      var cacheNames = await caches.keys();
+      await Promise.all(cacheNames.map(function(name){
+        if (name !== CACHE_NAME && name.includes("hksilksong")) {
+          log("Deleting old cache: " + name);
+          return caches.delete(name);
         }
-        setTimeout(() => {
-          warningBanner.removeChild(div);
-          update();
-        }, 5000);
+      }));
+    } catch(e){}
+  }
+
+  /* Fetch override for addressables: serve from Cache API when present */
+  (function installFetchOverride(){
+    var originalFetch = window.fetch;
+    window.fetch = async function(resource, options){
+      var url = typeof resource === "string" ? resource : resource.url;
+      var cleanPath = url.split("/").pop().split("?")[0].split("#")[0];
+      try {
+        var cache = await caches.open(CACHE_NAME);
+        var cachedResponse = await cache.match(cleanPath);
+        if (cachedResponse) return cachedResponse;
+      } catch(e){}
+      return originalFetch(resource, options);
+    };
+    window._hkOriginalFetch = originalFetch;
+  })();
+
+  async function unzipAndStore(zipFile) {
+    // zipFile is a File from OPFS
+    if (await isAaCached()) {
+      log("Addressables already extracted — skipping unzip");
+      aaExtracted = true;
+      return;
+    }
+    var blob = zipFile.slice ? zipFile : new Blob([zipFile]);
+    // For large zip, use arrayBuffer -> JSZip.loadAsync; JSZip handles ~2GB but batched writes keep peak lower than old approach (which merged + extracted in RAM triple)
+    setStatus("Preparing addressables…");
+    var arrayBuf = await blob.arrayBuffer();
+    setStatus("Extracting addressables…");
+    var zip = await JSZip.loadAsync(arrayBuf);
+    var files = Object.values(zip.files).filter(function(f){ return !f.dir; });
+    var total = files.length;
+    var cache = await caches.open(CACHE_NAME);
+    var processed = 0;
+    var batchSize = 10;
+    for (var i = 0; i < files.length; i += batchSize) {
+      var batch = files.slice(i, i + batchSize);
+      await Promise.all(batch.map(async function(file){
+        try {
+          var b = await file.async("blob");
+          await cache.put(file.name, new Response(b));
+        } catch (e) {
+          console.error("Failed:", file.name, e);
+        }
+        processed++;
+        setStatus("Extracting addressables… (" + processed + "/" + total + ")");
+        setProgress(processed/total, "Extracting " + processed + "/" + total);
+      }));
+      await new Promise(function(r){ setTimeout(r,0); });
+    }
+    await cache.put("CACHE_COMPLETE", new Response("ok"));
+    aaExtracted = true;
+    log("Cache complete: " + total + " addressables extracted");
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Audio guard
+   * ---------------------------------------------------------------- */
+  var MAX_AUDIO_RETRIES = 8;
+  function blockedAudioError(detail) {
+    var message = 'audio is blocked until you tap the screen' + (detail ? ' (' + detail + ')' : '');
+    try {
+      if (typeof DOMException === 'function') return new DOMException(message, 'NotAllowedError');
+    } catch (e) { /* fall through */ }
+    var err = new Error(message);
+    try { err.name = 'NotAllowedError'; } catch (e2) {}
+    return err;
+  }
+  function noteAudioFailure(name) {
+    self.__hkAudioFails = (self.__hkAudioFails || 0) + 1;
+    if (self.__hkAudioFails === 1 || self.__hkAudioFails === MAX_AUDIO_RETRIES) {
+      log('audio guard: play() refused with ' + (name || 'an unknown error') +
+          ', relabelled as NotAllowedError (' + self.__hkAudioFails + ' of ' + MAX_AUDIO_RETRIES + ')');
+    }
+    return self.__hkAudioFails;
+  }
+  function installAudioGuards() {
+    var media = (typeof HTMLMediaElement !== 'undefined' && HTMLMediaElement.prototype) || null;
+    if (media && !self.__hkPlayPatched && typeof media.play === 'function') {
+      self.__hkPlayPatched = true;
+      var rawPlay = media.play;
+      media.play = function () {
+        var result;
+        try {
+          result = rawPlay.apply(this, arguments);
+        } catch (error) {
+          var thrown = noteAudioFailure(error && error.name);
+          return thrown >= MAX_AUDIO_RETRIES
+            ? Promise.resolve()
+            : Promise.reject(blockedAudioError(error && error.name));
+        }
+        if (!result || typeof result.then !== 'function') {
+          self.__hkAudioFails = 0;
+          return result === undefined ? Promise.resolve() : result;
+        }
+        return result.then(function () {
+          self.__hkAudioFails = 0;
+        }, function (error) {
+          var name = error && error.name;
+          if (name === 'NotAllowedError') throw error;
+          var fails = noteAudioFailure(name);
+          if (fails >= MAX_AUDIO_RETRIES) return undefined;
+          throw blockedAudioError(name);
+        });
+      };
+    }
+    var ctxProto =
+      (typeof BaseAudioContext !== 'undefined' && BaseAudioContext.prototype) ||
+      (typeof AudioContext !== 'undefined' && AudioContext.prototype) ||
+      (typeof webkitAudioContext !== 'undefined' && webkitAudioContext.prototype) || null;
+    if (ctxProto && !self.__hkResumePatched && typeof ctxProto.resume === 'function') {
+      self.__hkResumePatched = true;
+      var rawResume = ctxProto.resume;
+      ctxProto.resume = function () {
+        var result;
+        try {
+          result = rawResume.apply(this, arguments);
+        } catch (error) {
+          log('audio guard: resume() threw ' + ((error && error.name) || 'an error') + ' — ignored');
+          return Promise.resolve();
+        }
+        if (result && typeof result.then === 'function') {
+          return result.catch(function (error) {
+            log('audio guard: resume() refused (' + ((error && error.name) || 'unknown') +
+                ') — waiting for a gesture');
+            return undefined;
+          });
+        }
+        return result === undefined ? Promise.resolve() : result;
+      };
+    }
+  }
+  function silentWavUrl() {
+    var SAMPLES = 800;
+    var bytes = new Uint8Array(44 + SAMPLES);
+    var view = new DataView(bytes.buffer);
+    function ascii(offset, text) {
+      for (var i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    }
+    ascii(0, 'RIFF');
+    view.setUint32(4, 36 + SAMPLES, true);
+    ascii(8, 'WAVE');
+    ascii(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 8000, true);
+    view.setUint32(28, 8000, true);
+    view.setUint16(32, 1, true);
+    view.setUint16(34, 8, true);
+    ascii(36, 'data');
+    view.setUint32(40, SAMPLES, true);
+    for (var i = 0; i < SAMPLES; i++) view.setUint8(44 + i, 128);
+    try {
+      if (typeof Blob !== 'function' || typeof URL === 'undefined' ||
+          typeof URL.createObjectURL !== 'function') return null;
+      return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+    } catch (e) {
+      return null;
+    }
+  }
+  var playbackPrimed = false;
+  function primeMediaPlayback() {
+    if (playbackPrimed) return;
+    playbackPrimed = true;
+    var url = null;
+    try { url = silentWavUrl(); } catch (e) { url = null; }
+    if (!url) return;
+    var element = null;
+    try {
+      element = (typeof Audio === 'function') ? new Audio(url) : document.createElement('audio');
+      if (element && element.src !== url) element.src = url;
+    } catch (e) { element = null; }
+    if (!element) {
+      try { URL.revokeObjectURL(url); } catch (e2) {}
+      return;
+    }
+    try { element.volume = 0; } catch (e) {}
+    try {
+      var started = element.play();
+      if (started && typeof started.catch === 'function') started.catch(function () {});
+      log('media playback unlocked from a user gesture');
+    } catch (e) {
+      log('could not prime media playback: ' + ((e && e.message) || e));
+    }
+    setTimeout(function () {
+      try { element.pause(); } catch (e) {}
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    }, 600);
+  }
+
+  function installAudioUnlock() {
+    if (self.__hkAudioUnlockInstalled) return;
+    self.__hkAudioUnlockInstalled = true;
+    var contexts = [];
+    ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
+      var Orig = window[name];
+      if (!Orig) return;
+      function Wrapped() {
+        var ctx = new (Function.prototype.bind.apply(Orig, [null].concat(Array.prototype.slice.call(arguments))))();
+        contexts.push(ctx);
+        return ctx;
+      }
+      Wrapped.prototype = Orig.prototype;
+      try { window[name] = Wrapped; } catch (e) {}
+    });
+    var unlock = function () {
+      primeMediaPlayback();
+      contexts.forEach(function (ctx) {
+        try { if (ctx.state === 'suspended') ctx.resume(); } catch (e) {}
+      });
+      try {
+        var inst = window.unityInstance;
+        if (inst && typeof inst.SendMessage === 'function' && !unlock.done) {
+          unlock.done = true;
+        }
+      } catch (e) {}
+    };
+    ['touchend', 'pointerup', 'mousedown', 'keydown', 'click'].forEach(function (ev) {
+      document.addEventListener(ev, unlock, { passive: true });
+    });
+    log('audio unlock armed (' + contexts.length + ' contexts created so far)');
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Wake lock
+   * ---------------------------------------------------------------- */
+  var wakeLock = null;
+  async function keepAwake() {
+    try {
+      if (navigator.wakeLock && navigator.wakeLock.request) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        log('screen wake lock acquired');
+      }
+    } catch (e) {
+      log('wake lock unavailable: ' + e.message);
+    }
+  }
+  function releaseAwake() {
+    try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Graphics & performance — ladder system
+   * ---------------------------------------------------------------- */
+  var canvas = $('unity-canvas');
+  var wrap = $('canvas-wrap');
+
+  var PRESETS = [
+    { id: 'high',        label: 'High',        scale: 1.00, fps: 60 },
+    { id: 'balanced',    label: 'Balanced',    scale: 0.85, fps: 60 },
+    { id: 'smooth',      label: 'Smooth',      scale: 0.70, fps: 45 },
+    { id: 'low',         label: 'Low',         scale: 0.55, fps: 30 },
+    { id: 'potato',      label: 'Potato',      scale: 0.40, fps: 30 },
+    { id: 'minimum',     label: 'Minimum',     scale: 0.30, fps: 30 },
+    { id: 'rock_bottom', label: 'Rock bottom', scale: 0.25, fps: 24 },
+  ];
+  var QUALITIES = [1, 0.85, 0.7, 0.55, 0.4, 0.3, 0.25];
+  var FPS_CAPS = [0, 60, 45, 30, 24, 20];
+  var MIN_SCALE = 0.25;
+  var PERF_KEY = 'hk.perf';
+  var HEARTBEAT_KEY = 'hk.heartbeat';
+  var STREAK_KEY = 'hk.crashStreak';
+  var CRASH_HEAP_KEY = 'hk.crashHeap';
+
+  function nowMs() {
+    return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  }
+  function readStore(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function writeStore(key, value) {
+    try { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (e) {}
+  }
+  function readJson(key) { try { return JSON.parse(readStore(key) || 'null'); } catch (e) { return null; } }
+
+  var perf = { preset: 0, scale: 1, fps: 60, auto: true, crashSteps: 0 };
+  var lastSessionInfo = null;
+
+  function defaultPresetIndex() { return isTouch() ? 1 : 0; }
+
+  function loadPerf() {
+    var saved = readJson(PERF_KEY);
+    var index = defaultPresetIndex();
+    if (saved && typeof saved === 'object') {
+      if (saved.preset >= 0 && saved.preset < PRESETS.length) index = saved.preset | 0;
+      if (typeof saved.scale === 'number' && saved.scale >= MIN_SCALE && saved.scale <= 1) perf.scale = saved.scale;
+      if (typeof saved.fps === 'number' && saved.fps >= 0) perf.fps = saved.fps;
+      if (typeof saved.auto === 'boolean') perf.auto = saved.auto;
+    } else {
+      var oldIndex = parseFloat(readStore('hk.quality') || 'NaN');
+      if (oldIndex >= 0 && oldIndex < QUALITIES.length) {
+        index = oldIndex | 0;
+        perf.scale = QUALITIES[index];
+      }
+    }
+    perf.preset = index;
+    if (!saved || typeof saved.scale !== 'number') perf.scale = PRESETS[index].scale;
+    if (!saved || typeof saved.fps !== 'number') perf.fps = PRESETS[index].fps;
+    var byId = params.get('preset');
+    if (byId) {
+      for (var i = 0; i < PRESETS.length; i++) {
+        if (PRESETS[i].id === byId) { perf.preset = i; perf.scale = PRESETS[i].scale; perf.fps = PRESETS[i].fps; }
+      }
+    }
+    var byFps = parseFloat(params.get('fps'));
+    if (!isNaN(byFps) && byFps >= 0) perf.fps = byFps;
+    var byScale = parseFloat(params.get('scale'));
+    if (!isNaN(byScale) && byScale >= MIN_SCALE && byScale <= 1) perf.scale = byScale;
+    if (params.get('auto') === '0' || params.get('auto') === 'off') perf.auto = false;
+    if (params.get('auto') === '1' || params.get('auto') === 'on') perf.auto = true;
+  }
+
+  function savePerf() {
+    writeStore(PERF_KEY, JSON.stringify({
+      preset: perf.preset, scale: perf.scale, fps: perf.fps, auto: perf.auto,
+    }));
+  }
+  function activePresetIndex() {
+    return Math.min(PRESETS.length - 1, perf.preset + perf.crashSteps);
+  }
+  function perfDescription() {
+    return Math.round(perf.scale * 100) + '% render, ' +
+      (perf.fps > 0 ? perf.fps + ' fps cap' : 'uncapped') +
+      (perf.crashSteps ? ' (lowered after ' + perf.crashSteps + ' crash' + (perf.crashSteps > 1 ? 'es' : '') + ')' : '');
+  }
+
+  function setCanvasCss(w, h, q) {
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.style.transform = q === 1 ? 'none' : 'scale(' + (1 / q).toFixed(4) + ')';
+  }
+  function applyResolution() {
+    var q = perf.scale;
+    var w = Math.max(160, Math.round((window.innerWidth || 1024) * q));
+    var h = Math.max(120, Math.round((window.innerHeight || 768) * q));
+    setCanvasCss(w, h, q);
+    if (!unityInstance) {
+      canvas.width = w;
+      canvas.height = h;
+    } else {
+      applyGameResolution(w, h);
+    }
+  }
+  var resFixTimer = 0;
+  function applyGameResolution(w, h) {
+    var m = unityModule();
+    if (!m || typeof m.setCanvasSize !== 'function') return;
+    try {
+      m.setCanvasSize(w, h);
+      clearTimeout(resFixTimer);
+      resFixTimer = setTimeout(function () {
+        setCanvasCss(w, h, perf.scale);
+        log('render target: ' + canvas.width + '×' + canvas.height +
+            ' for a ' + (window.innerWidth || 0) + '×' + (window.innerHeight || 0) + ' screen');
+      }, 60);
+    } catch (e) {
+      logError('could not resize the game canvas: ' + e.message);
+    }
+  }
+
+  var resizeTimer = 0;
+  function onResize() {
+    applyResolution();
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      applyResolution();
+      setChips();
+    }, 350);
+  }
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', function () { setTimeout(onResize, 400); });
+
+  /* ---------------------------------------------------------------- *
+   * Frame limiter
+   * ---------------------------------------------------------------- */
+  var rawRaf = typeof window.requestAnimationFrame === 'function'
+    ? window.requestAnimationFrame.bind(window) : null;
+  var rawCancel = typeof window.cancelAnimationFrame === 'function'
+    ? window.cancelAnimationFrame.bind(window) : null;
+  var rafQueue = [];
+  var rafById = Object.create(null);
+  var rafScheduled = false;
+  var rafNextId = 1;
+  var frameInterval = 0;
+  var lastFrameAt = 0;
+  var frameCount = 0;
+  var lastFrameSeenAt = 0;
+
+  function noteFrame(now) {
+    frameCount++;
+    lastFrameSeenAt = now;
+  }
+  function releaseFrames(now) {
+    rafScheduled = false;
+    lastFrameAt = now;
+    var list = rafQueue;
+    rafQueue = [];
+    noteFrame(now);
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i];
+      delete rafById[entry.id];
+      if (entry.cancelled) continue;
+      try { entry.cb(now); } catch (e) { logError('frame callback: ' + ((e && e.message) || e)); }
+    }
+  }
+  function scheduleFrames() {
+    if (rafScheduled || !rawRaf) return;
+    rafScheduled = true;
+    rawRaf(function (t) {
+      var now = typeof t === 'number' ? t : nowMs();
+      if (frameInterval > 0 && lastFrameAt && frameInterval - (now - lastFrameAt) > 1) {
+        rafScheduled = false;
+        scheduleFrames();
+        return;
+      }
+      releaseFrames(now);
+    });
+  }
+  function installFrameLimiter() {
+    if (!rawRaf) return;
+    window.requestAnimationFrame = function (cb) {
+      if (typeof cb !== 'function') return rawRaf(cb);
+      if (frameInterval <= 0) {
+        return rawRaf(function (t) { noteFrame(typeof t === 'number' ? t : nowMs()); cb(t); });
+      }
+      var entry = { id: rafNextId++, cb: cb, cancelled: false };
+      rafQueue.push(entry);
+      rafById[entry.id] = entry;
+      scheduleFrames();
+      return entry.id;
+    };
+    window.cancelAnimationFrame = function (id) {
+      var entry = rafById[id];
+      if (entry) { entry.cancelled = true; delete rafById[id]; return; }
+      if (rawCancel) rawCancel(id);
+    };
+  }
+  function setFrameInterval() {
+    frameInterval = perf.fps > 0 ? 1000 / perf.fps : 0;
+  }
+
+  /* ---------------------------------------------------------------- *
+   * FPS + auto-degrade
+   * ---------------------------------------------------------------- */
+  var fpsSamples = { frames: 0, at: 0 };
+  var lastFps = 0;
+  var slowTicks = 0;
+  var lastPerfChangeAt = 0;
+  var autoCooldownUntil = 0;
+
+  function considerAutoDegrade(fps, now) {
+    if (!perf.auto || !booted) return false;
+    if (now < autoCooldownUntil || now - lastPerfChangeAt < 15000) return false;
+    var target = frameInterval > 0 ? 1000 / frameInterval : 55;
+    if (fps <= 0) return false;
+    if (fps < target * 0.82) slowTicks++;
+    else if (fps >= target * 0.95) slowTicks = 0;
+    if (slowTicks < 3) return false;
+    slowTicks = 0;
+    return degradeStep('auto');
+  }
+
+  function degradeStep(reason) {
+    var current = activePresetIndex();
+    var next = PRESETS[current + 1];
+    if (next) {
+      perf.preset = current + 1;
+      perf.scale = next.scale;
+      perf.fps = next.fps;
+      perf.crashSteps = 0;
+    } else if (perf.fps === 0 || perf.fps > 30) {
+      perf.fps = 30;
+    } else if (perf.fps > 24) {
+      perf.fps = 24;
+    } else if (perf.fps > 20) {
+      perf.fps = 20;
+    } else if (perf.scale > MIN_SCALE) {
+      perf.scale = Math.max(MIN_SCALE, Math.round((perf.scale - 0.10) * 100) / 100);
+    } else {
+      return false;
+    }
+    savePerf();
+    applyPerf(reason);
+    toast('Frame rate was low — graphics lowered to ' + PRESETS[activePresetIndex()].label +
+          '. Menu ▸ Graphics to change.', 6000);
+    return true;
+  }
+
+  function applyTextureQuality() {
+    var m = unityModule();
+    var asm = m && m.asm ? m.asm : null;
+    if (!asm) return false;
+    var s = perf.scale;
+    var texSize = s <= 0.25 ? 256
+      : s <= 0.30 ? 512
+      : s <= 0.55 ? 1024
+      : 2048;
+    var mipLimit = s <= 0.25 ? 3
+      : s <= 0.30 ? 2
+      : s <= 0.55 ? 1
+      : 0;
+    var applied = false;
+    try {
+      if (typeof asm._QualitySettings_SetTextureSize === 'function') {
+        asm._QualitySettings_SetTextureSize(texSize);
+        applied = true;
+      }
+      if (typeof asm._QualitySettings_SetMasterTextureLimit === 'function') {
+        asm._QualitySettings_SetMasterTextureLimit(mipLimit);
+        applied = true;
+      }
+    } catch (e) {
+      logError('could not set texture quality: ' + ((e && e.message) || e));
+    }
+    return applied;
+  }
+
+  function cleanupMemory() {
+    if (!booted) return false;
+    var Module = unityModule();
+    if (!Module || !Module.asm) return false;
+    var ran = false;
+    try {
+      if (typeof Module.asm._gc_collect === 'function') {
+        Module.asm._gc_collect();
+        ran = true;
+      }
+    } catch (e) {
+      logError('gc_collect failed: ' + ((e && e.message) || e));
+    }
+    try {
+      if (typeof Module.asm._ResourceManager_UnloadUnusedAssets === 'function') {
+        Module.asm._ResourceManager_UnloadUnusedAssets();
+        ran = true;
+      }
+    } catch (e) {
+      logError('UnloadUnusedAssets failed: ' + ((e && e.message) || e));
+    }
+    var table = Module.asm.Zi;
+    if (table && typeof table.get === 'function') {
+      try {
+        var unloadUnusedAssets = table.get(46728);
+        if (typeof unloadUnusedAssets === 'function') {
+          unloadUnusedAssets(0);
+          ran = true;
+        }
+      } catch (e) {
+        logError('Resources.UnloadUnusedAssets (wasmTable 46728) failed: ' + ((e && e.message) || e));
+      }
+      try {
+        var gcCollect = table.get(56071);
+        if (typeof gcCollect === 'function') {
+          gcCollect(0);
+          ran = true;
+        }
+      } catch (e) {
+        logError('System.GC.Collect (wasmTable 56071) failed: ' + ((e && e.message) || e));
+      }
+    }
+    if (ran) log('memory cleanup: ran GC / UnloadUnusedAssets');
+    return ran;
+  }
+
+  function applyPerf(reason) {
+    slowTicks = 0;
+    setFrameInterval();
+    lastFrameAt = 0;
+    lastPerfChangeAt = nowMs();
+    autoCooldownUntil = lastPerfChangeAt + 20000;
+    applyResolution();
+    applyTextureQuality();
+    setChips();
+    log('graphics: ' + perfDescription() + (reason ? ' (' + reason + ')' : ''));
+  }
+
+  function fpsTick() {
+    if (!booted) return;
+    var now = nowMs();
+    if (!fpsSamples.at) { fpsSamples = { frames: frameCount, at: now }; return; }
+    var elapsed = now - fpsSamples.at;
+    if (elapsed < 400) return;
+    var frames = frameCount - fpsSamples.frames;
+    fpsSamples = { frames: frameCount, at: now };
+    if (document.hidden) return;
+    lastFps = frames > 0 ? frames * 1000 / elapsed : 0;
+    if (!memCapTimer) {
+      var text = Math.round(lastFps) + ' fps';
+      if (frameInterval > 0) text += ' · cap ' + perf.fps;
+      var chipHeap = heapMB();
+      if (chipHeap !== null && chipHeap > 1000) text += ' · ' + (chipHeap / 1024).toFixed(2) + ' GB heap';
+      fpsEl.textContent = text;
+      fpsEl.style.color = lastFps > 50 ? '#9dffb0' : lastFps > 30 ? '#ffd479' : '#ff9d9d';
+    }
+    considerAutoDegrade(lastFps, now);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Crash bookkeeping
+   * ---------------------------------------------------------------- */
+  var sessionStart = 0;
+  var heartbeatTimer = 0;
+  var DATA_MB = 1986; // addressables zip + build data
+
+  function unityModule() {
+    var inst = unityInstance || (typeof window !== 'undefined' ? window.unityInstance : null);
+    try { return inst && inst.Module ? inst.Module : null; } catch (e) { return null; }
+  }
+  function heapMB() {
+    try {
+      var m = unityModule();
+      if (m) {
+        if (m.HEAPU8 && m.HEAPU8.length) return Math.round(m.HEAPU8.length / 1048576);
+        if (m.wasmMemory && m.wasmMemory.buffer) return Math.round(m.wasmMemory.buffer.byteLength / 1048576);
+        if (m.asm && m.asm.Ai && m.asm.Ai.buffer) return Math.round(m.asm.Ai.buffer.byteLength / 1048576);
+      }
+    } catch (e) {}
+    return null;
+  }
+  function crashHeapMB() {
+    var value = parseInt(readStore(CRASH_HEAP_KEY) || '', 10);
+    return isFinite(value) && value > 0 ? value : null;
+  }
+  function memoryLimits() {
+    var died = crashHeapMB();
+    if (died) {
+      return {
+        warn: Math.round(died * 0.80),
+        alarm: Math.round(died * 0.95),
+        crashHeap: died,
+        learned: true,
+      };
+    }
+    return { warn: 1000, alarm: 1400, crashHeap: null, learned: false };
+  }
+
+  var HARD_MEMORY_CAP_MB = 1400;
+  var memCapTimer = 0;
+  var memCapSeconds = 0;
+
+  function updateMemCapCorner() {
+    var msg = memCapSeconds > 0
+      ? 'Memory limit reached — reloading… (' + memCapSeconds + 's)'
+      : 'Memory limit reached — reloading…';
+    if (memCapEl) {
+      memCapEl.textContent = msg;
+      memCapEl.classList.remove('hidden');
+    }
+    if (fpsEl) {
+      fpsEl.textContent = msg;
+      fpsEl.style.color = '#ffd479';
+      fpsEl.classList.remove('hidden');
+    }
+  }
+
+  function startMemoryCapReload(heap) {
+    if (memCapTimer) return;
+    memCapSeconds = 5;
+    log('hard memory cap reached (' + heap + ' MB > ' + HARD_MEMORY_CAP_MB + ' MB) — reloading in 5s');
+    updateMemCapCorner();
+    memCapTimer = setInterval(function () {
+      memCapSeconds--;
+      if (memCapSeconds <= 0) {
+        clearInterval(memCapTimer);
+        memCapTimer = 0;
+        updateMemCapCorner();
+        markCleanExit();
+        try { location.reload(); } catch (e) {}
+        return;
+      }
+      updateMemCapCorner();
+    }, 1000);
+  }
+
+  function checkMemory() {
+    if (!booted) return;
+    writeHeartbeat();
+  }
+  function writeHeartbeat() {
+    var hb = {
+      at: Date.now(),
+      start: sessionStart,
+      preset: PRESETS[activePresetIndex()].id,
+      scale: perf.scale,
+      fps: perf.fps,
+      measured: Math.round(lastFps),
+      heap: heapMB(),
+      visible: !document.hidden,
+    };
+    writeStore(HEARTBEAT_KEY, JSON.stringify(hb));
+    if (booted && hb.heap !== null && hb.heap > HARD_MEMORY_CAP_MB) {
+      startMemoryCapReload(hb.heap);
+    }
+    return hb;
+  }
+  function startHeartbeat() {
+    sessionStart = Date.now();
+    writeHeartbeat();
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(writeHeartbeat, 4000);
+  }
+  function markCleanExit() {
+    clearInterval(heartbeatTimer);
+    if (memCapTimer) { clearInterval(memCapTimer); memCapTimer = 0; }
+    writeStore(HEARTBEAT_KEY, null);
+    if (booted) writeStore(STREAK_KEY, '0');
+  }
+
+  function evaluateLastSession() {
+    var hb = readJson(HEARTBEAT_KEY);
+    writeStore(HEARTBEAT_KEY, null);
+    if (!hb || !hb.at) { perf.crashSteps = 0; return; }
+    var age = Date.now() - hb.at;
+    if (age > 36 * 3600 * 1000) { perf.crashSteps = 0; return; }
+    var played = hb.start && hb.at > hb.start ? hb.at - hb.start : 0;
+    var killedWhilePlaying = hb.visible !== false;
+    if (killedWhilePlaying && hb.heap > 0) {
+      writeStore(CRASH_HEAP_KEY, String(Math.round(hb.heap)));
+      log('learned: this iPad killed the tab at a heap of ' + Math.round(hb.heap) + ' MB');
+    }
+    var streak = parseInt(readStore(STREAK_KEY) || '0', 10) || 0;
+    streak = killedWhilePlaying ? Math.min(PRESETS.length - 1, streak + 1) : 0;
+    writeStore(STREAK_KEY, String(streak));
+    perf.crashSteps = streak;
+    lastSessionInfo = {
+      crashed: killedWhilePlaying,
+      playedMs: played,
+      ageMs: age,
+      preset: hb.preset,
+      heap: hb.heap,
+      streak: streak,
+      hidden: !killedWhilePlaying,
+    };
+    log('last session: ' + (killedWhilePlaying ? 'stopped unexpectedly' : 'closed while in the background') +
+        ' after ' + Math.round(played / 60000) + ' min' + (hb.heap ? ', heap ' + hb.heap + ' MB' : ''));
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Recovery overlay
+   * ---------------------------------------------------------------- */
+  var recoverEl = $('recover'), recoverMsg = $('recoverMsg');
+  var recoverShown = false;
+
+  function showRecover(message) {
+    if (recoverShown) return;
+    recoverShown = true;
+    recoverMsg.textContent = message;
+    recoverEl.classList.remove('hidden');
+    logError('recovery: ' + message);
+  }
+  $('recoverBtn').addEventListener('click', function () { markCleanExit(); location.reload(); });
+  $('recoverWait').addEventListener('click', function () {
+    recoverEl.classList.add('hidden');
+    recoverShown = false;
+    lastFrameSeenAt = nowMs();
+    log('recovery dismissed, still waiting');
+  });
+
+  var CONTEXT_LOST_MSG =
+    'Safari dropped the graphics context — the iPad ran short of memory. ' +
+    'Reload to start again. A lower graphics level (Menu ▸ Graphics) makes this much less likely.';
+  canvas.addEventListener('webglcontextlost', function (e) {
+    if (e && e.preventDefault) e.preventDefault();
+    showRecover(CONTEXT_LOST_MSG);
+  }, false);
+  canvas.addEventListener('webglcontextrestored', function () {
+    log('WebGL context restored — giving the game another chance');
+    recoverEl.classList.add('hidden');
+    recoverShown = false;
+    lastFrameSeenAt = nowMs();
+    toast('Graphics context restored — reload if the picture is wrong', 6000);
+  }, false);
+
+  function watchForHang() { }
+
+  /* ---------------------------------------------------------------- *
+   * Diagnostics rows
+   * ---------------------------------------------------------------- */
+  function gpuName() {
+    try {
+      var m = unityModule();
+      var gl = m && (m.ctx || m.GLctx || (m.canvas && m.canvas.GLctxObject && m.canvas.GLctxObject.GLctx));
+      if (!gl || typeof gl.getParameter !== 'function') return null;
+      var ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || null) : (gl.getParameter(gl.RENDERER) || null);
+    } catch (e) { return null; }
+  }
+  function describeLastSession(info) {
+    var mins = Math.round(info.playedMs / 60000);
+    if (!info.crashed) return 'closed while in the background after ' + mins + ' min';
+    return 'stopped unexpectedly after ' + mins + ' min' +
+      (info.streak > 1 ? ' (' + info.streak + ' in a row)' : '');
+  }
+  function refreshPerfRows() {
+    var rows = [];
+    rows.push(['internal resolution',
+      (canvas.width || '?') + ' × ' + (canvas.height || '?') +
+      ' of ' + (window.innerWidth || 0) + ' × ' + (window.innerHeight || 0) +
+      ' (' + Math.round(perf.scale * 100) + '%)']);
+    rows.push(['graphics', PRESETS[activePresetIndex()].label +
+      (perf.crashSteps ? ' — lowered after ' + perf.crashSteps + ' crash' + (perf.crashSteps > 1 ? 'es' : '') : '')]);
+    rows.push(['frame rate', Math.round(lastFps) + ' fps' + (perf.fps > 0 ? ', capped at ' + perf.fps : ', uncapped')]);
+    rows.push(['auto-degrade', perf.auto ? 'on — lowers the graphics if the frame rate stays low' : 'off']);
+    var heap = heapMB();
+    var limits = memoryLimits();
+    rows.push(['game memory (wasm heap)', heap === null ? 'not reported' : heap + ' MB']);
+    if (heap !== null) {
+      rows.push(['tab total (heap + game data)', (heap + DATA_MB) + ' MB']);
+    }
+    rows.push(['last crash at', limits.crashHeap
+      ? limits.crashHeap + ' MB heap — warnings now start at ' + limits.warn + ' MB'
+      : 'nothing recorded']);
+    if (heap !== null && heap >= limits.warn) {
+      rows.push(['memory warning', 'close to what iPadOS gives one tab — a lower render scale helps']);
+    }
+    var gpu = gpuName();
+    if (gpu) rows.push(['GPU', String(gpu)]);
+    if (lastSessionInfo) rows.push(['last session', describeLastSession(lastSessionInfo)]);
+    var html = '';
+    rows.forEach(function (r) {
+      html += '<div class="row"><span>' + r[0] + '</span><span>' + r[1] + '</span></div>';
+    });
+    $('perfRows').innerHTML = html;
+  }
+
+  window.HKPerf = {
+    settings: function () {
+      return {
+        preset: perf.preset, activeIndex: activePresetIndex(), presetId: PRESETS[activePresetIndex()].id,
+        scale: perf.scale, fps: perf.fps, auto: perf.auto, crashSteps: perf.crashSteps,
+        frameInterval: frameInterval, lastFps: lastFps, frames: frameCount,
+      };
+    },
+    presets: function () { return PRESETS.map(function (p) { return p.id; }); },
+    lastSession: function () { return lastSessionInfo; },
+    heapMB: heapMB,
+    memoryLimits: memoryLimits,
+    checkMemory: checkMemory,
+    writeHeartbeat: writeHeartbeat,
+    cleanupMemory: cleanupMemory,
+    applyTextureQuality: applyTextureQuality,
+    HARD_MEMORY_CAP_MB: HARD_MEMORY_CAP_MB,
+    refreshPerfRows: refreshPerfRows,
+    apply: applyPerf,
+    degrade: function () { return degradeStep('manual'); },
+    autoTick: function (fps, force) {
+      if (force) {
+        booted = true;
+        lastPerfChangeAt = nowMs() - 600000;
+        autoCooldownUntil = 0;
+      }
+      return considerAutoDegrade(fps, nowMs());
+    },
+    setFps: function (n) { perf.fps = n; savePerf(); applyPerf('set'); },
+    setScale: function (n) { perf.scale = n; savePerf(); applyPerf('set'); },
+    cleanExit: markCleanExit,
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Diagnostics panel
+   * ---------------------------------------------------------------- */
+  var caps = null;
+
+  function setChips() {
+    $('perfBtn').textContent = 'Graphics: ' + PRESETS[activePresetIndex()].label;
+    $('fpsBtn').textContent = 'Frame cap: ' + (perf.fps > 0 ? String(perf.fps) : 'off');
+    $('queueBtn').textContent = 'Render scale: ' + Math.round(perf.scale * 100) + '%';
+    $('autoBtn').textContent = 'Auto-degrade: ' + (perf.auto ? 'on' : 'off');
+    $('padToggle').textContent = 'Touch controls: ' + (padOn ? (padAutoHidden ? 'hidden' : 'on') : 'off');
+    $('compatBtn').textContent = 'Compatibility mode: ' + (compatMode ? 'on' : 'off');
+  }
+
+  async function refreshStoreRows() {
+    var rows = [];
+    if (caps) {
+      rows.push(['private file system (OPFS)', caps.opfs ? 'yes' : 'no' + (caps.opfsError ? ' — ' + caps.opfsError : '')]);
+      rows.push(['storage quota', caps.quota ? mb(caps.quota) : 'unknown']);
+      rows.push(['used by this site', mb(caps.usage || 0)]);
+      rows.push(['free for us', caps.available ? mb(caps.available) : 'unknown']);
+      rows.push(['secure context', caps.secure ? 'yes' : 'no']);
+      rows.push(['web workers', caps.workers ? 'yes' : 'no']);
+    }
+    var info = null;
+    try { info = await HKStream.cacheInfo(); } catch (e) {}
+    if (info) {
+      info.entries.forEach(function (e) {
+        rows.push([e.name, e.size ? mb(e.size) : '']);
+      });
+      if (info.error) rows.push(['cache error', info.error]);
+    }
+    // also show Cache API status for addressables
+    try {
+      var c = await caches.open(CACHE_NAME);
+      var keys = await c.keys();
+      rows.push(['addressables cached', keys.length ? keys.length + ' files' : 'not yet']);
+      if (await c.match("CACHE_COMPLETE")) rows.push(['addressables', 'extracted ✓']);
+    } catch(e){}
+    var html = '';
+    rows.forEach(function (r) {
+      html += '<div class="row"><span>' + r[0] + '</span><span>' + r[1] + '</span></div>';
+    });
+    $('storeRows').innerHTML = html || '<div class="row"><span>(no info)</span></div>';
+  }
+
+  var padOn = localStorage.getItem('hk.pad') !== '0' && isTouch();
+  var padAutoHidden = false;
+  var compatMode = localStorage.getItem('hk.compat') === '1';
+  function isTouch() {
+    return (navigator.maxTouchPoints || 0) > 0 || /iPad|iPhone|iPod|Android/i.test(navigator.userAgent);
+  }
+
+  $('menuBtn').addEventListener('click', async function () {
+    panelEl.classList.toggle('hidden');
+    if (!panelEl.classList.contains('hidden')) {
+      setChips();
+      refreshPerfRows();
+      await refreshStoreRows();
+    }
+  });
+  $('padToggle').addEventListener('click', function () {
+    padOn = !padOn;
+    padAutoHidden = false;
+    localStorage.setItem('hk.pad', padOn ? '1' : '0');
+    applyPad();
+    setChips();
+  });
+  $('perfBtn').addEventListener('click', function () {
+    var index = (activePresetIndex() + 1) % PRESETS.length;
+    var preset = PRESETS[index];
+    perf.preset = index;
+    perf.crashSteps = 0;
+    perf.scale = preset.scale;
+    perf.fps = preset.fps;
+    writeStore(STREAK_KEY, '0');
+    savePerf();
+    applyPerf('picked');
+    toast(preset.label + ' — ' + Math.round(preset.scale * 100) + '% render, ' +
+      (preset.fps > 0 ? preset.fps + ' fps cap' : 'uncapped'), 4000);
+  });
+  $('fpsBtn').addEventListener('click', function () {
+    var at = FPS_CAPS.indexOf(perf.fps);
+    perf.fps = FPS_CAPS[at < 0 ? 0 : (at + 1) % FPS_CAPS.length];
+    savePerf();
+    applyPerf('picked');
+    toast(perf.fps > 0 ? 'Frame cap ' + perf.fps + ' fps' : 'Frame rate uncapped', 3000);
+  });
+  $('queueBtn').addEventListener('click', function () {
+    var at = QUALITIES.indexOf(perf.scale);
+    var index = at < 0 ? 0 : (at + 1) % QUALITIES.length;
+    perf.scale = QUALITIES[index];
+    for (var i = 0; i < PRESETS.length; i++) if (PRESETS[i].scale === perf.scale) perf.preset = i;
+    savePerf();
+    applyPerf('picked');
+    toast('Render scale ' + Math.round(perf.scale * 100) + '%', 3000);
+  });
+  $('autoBtn').addEventListener('click', function () {
+    perf.auto = !perf.auto;
+    slowTicks = 0;
+    savePerf();
+    setChips();
+    toast(perf.auto
+      ? 'Auto-degrade on — the page lowers the graphics if the frame rate stays low'
+      : 'Auto-degrade off — the graphics stay where you put them', 4000);
+  });
+  $('compatBtn').addEventListener('click', function () {
+    compatMode = !compatMode;
+    localStorage.setItem('hk.compat', compatMode ? '1' : '0');
+    setChips();
+    toast('Reload to apply compatibility mode');
+  });
+  $('clearBtn').addEventListener('click', async function () {
+    var okDone = await HKStream.clearCache();
+    try { await caches.delete(CACHE_NAME); } catch(e){}
+    clearStage();
+    toast(okDone ? 'Cached game data deleted — reload and it will download again' : 'Nothing to delete');
+    refreshStoreRows();
+  });
+  $('copyBtn').addEventListener('click', async function () {
+    var text = logLines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Diagnostics copied');
+    } catch (e) {
+      toast('Clipboard blocked — open the console instead');
+    }
+  });
+  $('reloadBtn').addEventListener('click', function () { location.reload(); });
+  $('exportBtn').addEventListener('click', function () { exportSave(); });
+  $('exportDatBtn').addEventListener('click', function () { exportDatSlot(); });
+  $('importBtn').addEventListener('click', function () { $('saveFile').click(); });
+  $('saveFile').addEventListener('change', function (ev) {
+    var file = ev.target.files && ev.target.files[0];
+    if (file) importSave(file);
+    ev.target.value = '';
+  });
+
+  /* ---------------------------------------------------------------- *
+   * FPS chip
+   * ---------------------------------------------------------------- */
+  var fpsTimer = 0, fpsRunning = false, tickCount = 0;
+  function startFps() {
+    if (fpsRunning) return;
+    fpsRunning = true;
+    fpsSamples = { frames: frameCount, at: nowMs() };
+    fpsTimer = setInterval(function () {
+      fpsTick();
+      watchForHang();
+      tickCount++;
+      if (tickCount % 2 === 0 && !panelEl.classList.contains('hidden')) refreshPerfRows();
+      if (tickCount % 60 === 0) cleanupMemory();
+    }, 1000);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Touch controls
+   * ---------------------------------------------------------------- */
+  var KEYCODES = {
+    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+    Tab: 9, Enter: 13, Escape: 27, Space: 32, Shift: 16,
+    z: 90, x: 88, c: 67, a: 65, d: 68, e: 69, s: 83, i: 73, w: 87,
+  };
+  var META = {
+    ArrowLeft: 'ArrowLeft', ArrowUp: 'ArrowUp', ArrowRight: 'ArrowRight', ArrowDown: 'ArrowDown',
+    Tab: 'Tab', Enter: 'Enter', Escape: 'Escape', Space: ' ', Shift: 'Shift',
+    z: 'z', x: 'x', c: 'c', a: 'a', d: 'd', e: 'e', s: 's', i: 'i', w: 'w',
+  };
+  function keyCodeOf(k) { return KEYCODES[k] || (k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0); }
+  function codeOf(k) {
+    if (/^Arrow/.test(k)) return k;
+    if (k.length === 1) return 'Key' + k.toUpperCase();
+    return k;
+  }
+  var padGeneratedEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
+  var keyboardHeld = Object.create(null);
+  var padKeyCounts = Object.create(null);
+  var padKeyNames = Object.create(null);
+  var padButtonControls = [];
+  var longPressTimer = 0;
+  var longPressOrigin = null;
+  var lastTouchAt = 0;
+  var LONG_PRESS_MS = 650;
+  var TOUCH_MOUSE_GUARD_MS = 800;
+  var gamepadSnapshots = Object.create(null);
+  var gamepadPollTimer = 0;
+
+  function isPadGeneratedEvent(ev) {
+    if (padGeneratedEvents) return padGeneratedEvents.has(ev);
+    return !!(ev && ev.__hkPadGenerated);
+  }
+  function sendKey(k, type) {
+    try { canvas.focus({ preventScroll: true }); } catch (e) {}
+    var init = {
+      key: META[k] || k, code: codeOf(k), keyCode: keyCodeOf(k), which: keyCodeOf(k),
+      bubbles: true, cancelable: true, composed: true,
+    };
+    var ev;
+    try { ev = new KeyboardEvent(type, init); } catch (e) { ev = document.createEvent('Event'); ev.initEvent(type, true, true); }
+    try { Object.defineProperty(ev, 'keyCode', { get: function () { return keyCodeOf(k); } }); } catch (e) {}
+    try { Object.defineProperty(ev, 'which', { get: function () { return keyCodeOf(k); } }); } catch (e) {}
+    if (padGeneratedEvents) padGeneratedEvents.add(ev);
+    else { try { ev.__hkPadGenerated = true; } catch (e) {} }
+    canvas.dispatchEvent(ev);
+  }
+  function normalizeKey(ev) {
+    var key = ev.key;
+    if (!key || key === 'Unidentified') key = ev.code;
+    if (key === 'Esc') return 'Escape';
+    if (key === ' ' || key === 'Spacebar') return 'Space';
+    if (key && /^Key[A-Z]$/i.test(key)) key = key.slice(3);
+    if (key && /^Digit[0-9]$/.test(key)) key = key.slice(5);
+    if (!key || key === 'Unidentified') {
+      var code = Number(ev.keyCode || ev.which || 0);
+      var keyByCode = {
+        9: 'Tab', 13: 'Enter', 16: 'Shift', 27: 'Escape', 32: 'Space',
+        37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown',
+      };
+      key = keyByCode[code] || (code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : '');
+    }
+    if (key && key.length === 1) key = key.toLowerCase();
+    return key || '';
+  }
+  function stopKeyEvent(ev) {
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    else if (ev.stopPropagation) ev.stopPropagation();
+  }
+  function holdPadKey(key) {
+    var count = padKeyCounts[key] || 0;
+    padKeyCounts[key] = count + 1;
+    if (count === 0 && !keyboardHeld[key]) sendKey(key, 'keydown');
+  }
+  function releasePadKey(key) {
+    var count = padKeyCounts[key] || 0;
+    if (!count) return;
+    if (count > 1) {
+      padKeyCounts[key] = count - 1;
+      return;
+    }
+    delete padKeyCounts[key];
+    if (!keyboardHeld[key]) sendKey(key, 'keyup');
+  }
+  function onPhysicalKeyDown(ev) {
+    if (isPadGeneratedEvent(ev)) return;
+    var key = normalizeKey(ev);
+    var managed = !!padKeyNames[key];
+    var padAlreadyHeld = managed && (padKeyCounts[key] || 0) > 0;
+    if (managed) keyboardHeld[key] = true;
+    if (key === 'Escape') showPadAfterPhysicalEscape();
+    else hidePadForPhysicalInput();
+    if (padAlreadyHeld) stopKeyEvent(ev);
+  }
+  function onPhysicalKeyUp(ev) {
+    if (isPadGeneratedEvent(ev)) return;
+    var key = normalizeKey(ev);
+    if (!padKeyNames[key]) return;
+    if (keyboardHeld[key]) delete keyboardHeld[key];
+    if (padKeyCounts[key]) stopKeyEvent(ev);
+  }
+  window.addEventListener('keydown', onPhysicalKeyDown, true);
+  window.addEventListener('keyup', onPhysicalKeyUp, true);
+
+  function isPadTarget(target) {
+    return !!(target && (target === padEl || (padEl.contains && padEl.contains(target))));
+  }
+  function applyPad() {
+    var visible = !!padOn && !padAutoHidden;
+    if (!visible) releasePadButtons();
+    padEl.classList.toggle('on', visible);
+  }
+  function hidePadForPhysicalInput() {
+    if (!padOn || padAutoHidden) return;
+    padAutoHidden = true;
+    applyPad();
+    setChips();
+  }
+  function showPadAfterPhysicalEscape() {
+    if (!padOn || !padAutoHidden) return;
+    padAutoHidden = false;
+    applyPad();
+    setChips();
+  }
+  function releasePadButtons() {
+    padButtonControls.slice().forEach(function (control) { control.up(); });
+  }
+
+  Array.prototype.forEach.call(padEl.querySelectorAll('button[data-key]'), function (btn) {
+    var key = btn.getAttribute('data-key');
+    var held = false;
+    padKeyNames[key] = true;
+    var down = function (e) {
+      e.preventDefault();
+      if (held) return;
+      held = true;
+      btn.classList.add('held');
+      holdPadKey(key);
+    };
+    var up = function (e) {
+      if (e) e.preventDefault();
+      if (!held) return;
+      held = false;
+      btn.classList.remove('held');
+      releasePadKey(key);
+    };
+    padButtonControls.push({ up: up });
+    btn.addEventListener('touchstart', down, { passive: false });
+    btn.addEventListener('touchend', up);
+    btn.addEventListener('touchcancel', up);
+    btn.addEventListener('mousedown', down);
+    btn.addEventListener('mouseup', up);
+    btn.addEventListener('mouseleave', up);
+    btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  });
+
+  function cancelPadLongPress() {
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = 0;
+    longPressOrigin = null;
+  }
+  function touchPoint(ev) {
+    var list = ev.touches && ev.touches.length ? ev.touches : ev.changedTouches;
+    if (list && list.length) {
+      return { x: Number(list[0].clientX) || 0, y: Number(list[0].clientY) || 0 };
+    }
+    if (typeof ev.clientX === 'number' && typeof ev.clientY === 'number') {
+      return { x: ev.clientX, y: ev.clientY };
+    }
+    return null;
+  }
+  function startPadLongPress(ev) {
+    lastTouchAt = Date.now();
+    if (ev.touches && ev.touches.length > 1) {
+      cancelPadLongPress();
+      return;
+    }
+    if (!padOn || !padAutoHidden || isPadTarget(ev.target)) return;
+    cancelPadLongPress();
+    longPressOrigin = touchPoint(ev);
+    longPressTimer = setTimeout(function () {
+      longPressTimer = 0;
+      longPressOrigin = null;
+      showPadAfterPhysicalEscape();
+    }, LONG_PRESS_MS);
+  }
+  function movePadLongPress(ev) {
+    if (ev.touches && ev.touches.length > 1) {
+      cancelPadLongPress();
+      return;
+    }
+    if (!longPressTimer || !longPressOrigin) return;
+    var point = touchPoint(ev);
+    if (point && (Math.abs(point.x - longPressOrigin.x) > 16 || Math.abs(point.y - longPressOrigin.y) > 16)) {
+      cancelPadLongPress();
+    }
+  }
+  document.addEventListener('touchstart', startPadLongPress, { passive: true });
+  document.addEventListener('touchmove', movePadLongPress, { passive: true });
+  document.addEventListener('touchend', cancelPadLongPress, { passive: true });
+  document.addEventListener('touchcancel', cancelPadLongPress, { passive: true });
+
+  function recentlyTouched() {
+    return Date.now() - lastTouchAt < TOUCH_MOUSE_GUARD_MS;
+  }
+  function onPhysicalPointerDown(ev) {
+    if (ev.pointerType === 'touch') {
+      lastTouchAt = Date.now();
+      startPadLongPress(ev);
+      return;
+    }
+    if (isPadTarget(ev.target)) return;
+    if (!ev.pointerType || ev.pointerType === 'mouse' || ev.pointerType === 'pen') hidePadForPhysicalInput();
+  }
+  function onPhysicalPointerMove(ev) {
+    if (ev.pointerType === 'touch') {
+      lastTouchAt = Date.now();
+      movePadLongPress(ev);
+      return;
+    }
+    if (isPadTarget(ev.target)) return;
+    if (ev.pointerType === 'mouse' || ev.pointerType === 'pen') hidePadForPhysicalInput();
+  }
+  function onPhysicalMouseDown(ev) {
+    if (isPadTarget(ev.target) || recentlyTouched()) return;
+    if (ev.sourceCapabilities && ev.sourceCapabilities.firesTouchEvents) return;
+    hidePadForPhysicalInput();
+  }
+  function onPhysicalMouseMove(ev) {
+    if (isPadTarget(ev.target) || recentlyTouched()) return;
+    if (ev.sourceCapabilities && ev.sourceCapabilities.firesTouchEvents) return;
+    hidePadForPhysicalInput();
+  }
+  document.addEventListener('pointerdown', onPhysicalPointerDown, true);
+  document.addEventListener('pointermove', onPhysicalPointerMove, true);
+  document.addEventListener('pointerup', function (ev) {
+    if (ev.pointerType === 'touch') cancelPadLongPress();
+  }, true);
+  document.addEventListener('pointercancel', function (ev) {
+    if (ev.pointerType === 'touch') cancelPadLongPress();
+  }, true);
+  document.addEventListener('mousedown', onPhysicalMouseDown, true);
+  document.addEventListener('mousemove', onPhysicalMouseMove, true);
+
+  function gamepadInputChanged(gamepad, index) {
+    var id = typeof gamepad.index === 'number' ? gamepad.index : index;
+    var previous = gamepadSnapshots[id] || { buttons: [], axes: [] };
+    var next = { buttons: [], axes: [] };
+    var used = false;
+    var buttons = gamepad.buttons || [];
+    for (var i = 0; i < buttons.length; i++) {
+      var button = buttons[i];
+      var value = typeof button === 'number' ? button : Number(button && button.value) || 0;
+      var pressed = typeof button === 'object' && !!(button && button.pressed);
+      if (pressed && value < 1) value = 1;
+      var active = pressed || value >= 0.5;
+      var old = previous.buttons[i] || { active: false, value: 0 };
+      if ((active && !old.active) || (active && old.active && Math.abs(value - old.value) >= 0.35)) used = true;
+      next.buttons[i] = { active: active, value: value };
+    }
+    var axes = gamepad.axes || [];
+    for (var j = 0; j < axes.length; j++) {
+      var axis = Number(axes[j]) || 0;
+      var axisActive = Math.abs(axis) >= 0.35;
+      var oldAxis = previous.axes[j] || { active: false, value: 0 };
+      if ((axisActive && !oldAxis.active) || (axisActive && oldAxis.active && Math.abs(axis - oldAxis.value) >= 0.35)) used = true;
+      next.axes[j] = { active: axisActive, value: axis };
+    }
+    gamepadSnapshots[id] = next;
+    return used;
+  }
+  function pollGamepads() {
+    if (typeof navigator.getGamepads !== 'function') return;
+    var gamepads;
+    try { gamepads = navigator.getGamepads(); } catch (e) { return; }
+    var seen = Object.create(null);
+    var used = false;
+    Array.prototype.forEach.call(gamepads || [], function (gamepad, index) {
+      if (!gamepad || gamepad.connected === false) return;
+      var id = typeof gamepad.index === 'number' ? gamepad.index : index;
+      seen[id] = true;
+      if (gamepadInputChanged(gamepad, index)) used = true;
+    });
+    Object.keys(gamepadSnapshots).forEach(function (id) {
+      if (!seen[id]) delete gamepadSnapshots[id];
+    });
+    if (used) hidePadForPhysicalInput();
+  }
+  window.addEventListener('gamepadconnected', pollGamepads);
+  window.addEventListener('gamepaddisconnected', function (ev) {
+    if (ev.gamepad && typeof ev.gamepad.index === 'number') delete gamepadSnapshots[ev.gamepad.index];
+  });
+
+  /* ---------------------------------------------------------------- *
+   * iOS housekeeping
+   * ---------------------------------------------------------------- */
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (ev) {
+    document.addEventListener(ev, function (e) { e.preventDefault(); }, { passive: false });
+  });
+  document.addEventListener('contextmenu', function (e) { if (e.target !== canvas) e.preventDefault(); });
+  document.addEventListener('dblclick', function (e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('touchmove', function (e) {
+    if (e.target === canvas || wrap.contains(e.target)) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      if (!booted) bgWarn.classList.remove('hidden');
+      markStage('hidden: ' + (currentStage || 'unknown'));
+      if (booted) writeHeartbeat();
+    } else {
+      bgWarn.classList.add('hidden');
+      lastFrameSeenAt = nowMs();
+      lastFrameAt = 0;
+      applyResolution();
+      if (booted) writeHeartbeat();
+      if (wakeLock === null && !booted) keepAwake();
+    }
+  });
+  window.addEventListener('pagehide', markCleanExit);
+
+  /* ---------------------------------------------------------------- *
+   * Saves
+   * ---------------------------------------------------------------- */
+  function openDb(name) {
+    return new Promise(function (res, rej) {
+      var req = indexedDB.open(name);
+      req.onsuccess = function () { res(req.result); };
+      req.onerror = function () { rej(req.error); };
+    });
+  }
+  function exportSave() {
+    if (typeof indexedDB === 'undefined') {
+      toast('Saving is not available in this browser/private window');
+      return;
+    }
+    var req = indexedDB.open('/idbfs');
+    req.onblocked = function () { toast('Close other game tabs and try again'); };
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('No save data yet'); return; }
+      var tx = db.transaction('FILE_DATA', 'readonly');
+      var store = tx.objectStore('FILE_DATA');
+      var all = store.getAll(), allKeys = store.getAllKeys();
+      all.onsuccess = function () {
+        allKeys.onsuccess = function () {
+          var values = all.result, keys = allKeys.result;
+          var exportData = keys.map(function (key, i) {
+            var entry = values[i], contents = entry.contents;
+            if (contents instanceof Int8Array) {
+              var obj = {};
+              for (var j = 0; j < contents.length; j++) obj[j] = contents[j];
+              contents = obj;
+            }
+            return { key: key, value: { timestamp: entry.timestamp, mode: entry.mode, contents: contents } };
+          });
+          var blob = new Blob([JSON.stringify(exportData)], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'hk-save.json';
+          a.click();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+          toast('Save exported');
+        };
+      };
+    };
+    req.onerror = function () { toast('Could not read the save database'); };
+  }
+  function importSave(file) {
+    if (typeof indexedDB === 'undefined') {
+      toast('Saving is not available in this browser/private window');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onerror = function () { toast('Could not read that file'); };
+    reader.onload = function () {
+      var bytes = new Uint8Array(reader.result);
+      var q = 0;
+      if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) q = 3;
+      while (q < bytes.length && (bytes[q] === 32 || bytes[q] === 9 || bytes[q] === 10 || bytes[q] === 13)) q++;
+      if (bytes[q] === 0x5b /* [ */) { importIdbfsJson(bytes, q); return; }
+      if (typeof HKSaveCodec === 'undefined') { toast('Save codec failed to load — reload the page'); return; }
+      var json;
+      try { json = HKSaveCodec.findSave(bytes); } catch (e) { json = null; }
+      if (json === null) {
+        toast('Not a Hollow Knight save — use a .dat / .dat.html from a save editor or hk-save.json from this page');
+        return;
+      }
+      var dat;
+      try { dat = HKSaveCodec.encodeDat(json); } catch (e) { toast('Could not package that save for the game'); return; }
+      importDatBytes(file, dat);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function importDatBytes(file, dat) {
+    var slot = slotFromName(file && file.name);
+    var req = indexedDB.open('/idbfs');
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('Start the game once before importing'); return; }
+      var tx = db.transaction('FILE_DATA', 'readwrite');
+      var store = tx.objectStore('FILE_DATA');
+      store.getAllKeys().onsuccess = function (ev) {
+        var keys = ev.target.result;
+        if (!keys.length) { toast('Start the game once before importing'); return; }
+        var currentHash = String(keys[0]).split('/')[2];
+        store.put(
+          { timestamp: new Date(), mode: 33206, contents: dat },
+          '/idbfs/' + currentHash + '/user' + slot + '.dat'
+        );
+      };
+      tx.oncomplete = function () { toast('Save imported into slot ' + slot + ' — reload the page'); };
+      tx.onerror = function () { toast('Import failed'); };
+    };
+    req.onerror = function () { toast('Could not read the save database'); };
+  }
+  function slotFromName(name) {
+    var m = /user\s*(\d+)/i.exec(String(name || ''));
+    var slot = m ? parseInt(m[1], 10) : 1;
+    if (!(slot >= 1 && slot <= 4)) slot = 1;
+    return slot;
+  }
+  function importIdbfsJson(bytes, offset) {
+    var entries;
+    try { entries = JSON.parse(new TextDecoder('utf-8').decode(offset ? bytes.subarray(offset) : bytes)); }
+    catch (e) { toast('Not a valid save file'); return; }
+    if (!Array.isArray(entries)) { toast('Not a valid save file'); return; }
+    var req = indexedDB.open('/idbfs');
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('Start the game once before importing'); return; }
+      var tx = db.transaction('FILE_DATA', 'readwrite');
+      var store = tx.objectStore('FILE_DATA');
+      store.getAllKeys().onsuccess = function (ev) {
+        var keys = ev.target.result;
+        if (!keys.length) { toast('Start the game once before importing'); return; }
+        var currentHash = String(keys[0]).split('/')[2];
+        keys.forEach(function (k) { if (String(k).indexOf(currentHash) === -1) store.delete(k); });
+        entries.forEach(function (entry) {
+          var parts = String(entry.key).split('/');
+          parts[2] = currentHash;
+          var val = entry.value, contents = val.contents;
+          if (contents && typeof contents === 'object' && !(contents instanceof Int8Array)) {
+            var idxs = Object.keys(contents).map(Number).sort(function (a, b) { return a - b; });
+            var arr = new Int8Array(idxs.length);
+            idxs.forEach(function (i) { arr[i] = contents[i]; });
+            contents = arr;
+          }
+          store.put({ timestamp: new Date(val.timestamp), mode: val.mode, contents: contents }, parts.join('/'));
+        });
+        tx.oncomplete = function () { toast('Save imported — reload the page'); };
+        tx.onerror = function () { toast('Import failed'); };
+      };
+    };
+  }
+  function exportDatSlot() {
+    if (typeof indexedDB === 'undefined') {
+      toast('Saving is not available in this browser/private window');
+      return;
+    }
+    var slot = parseInt(prompt('Export which slot as .dat? (1-4)', '1'), 10);
+    if (!(slot >= 1 && slot <= 4)) return;
+    var req = indexedDB.open('/idbfs');
+    req.onsuccess = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains('FILE_DATA')) { toast('No save data yet'); return; }
+      var tx = db.transaction('FILE_DATA', 'readonly');
+      var store = tx.objectStore('FILE_DATA');
+      store.getAllKeys().onsuccess = function (ev) {
+        var keys = ev.target.result;
+        if (!keys.length) { toast('No save data yet'); return; }
+        var currentHash = String(keys[0]).split('/')[2];
+        store.get('/idbfs/' + currentHash + '/user' + slot + '.dat').onsuccess = function (ev2) {
+          var entry = ev2.target.result;
+          if (!entry || !entry.contents || !entry.contents.length) { toast('Slot ' + slot + ' is empty'); return; }
+          var blob = new Blob([entry.contents], { type: 'application/octet-stream' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'user' + slot + '.dat';
+          a.click();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+          toast('Slot ' + slot + ' exported as user' + slot + '.dat');
+        };
+      };
+    };
+    req.onerror = function () { toast('Could not read the save database'); };
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Script loading
+   * ---------------------------------------------------------------- */
+  function loadScript(url) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = url;
+      s.onload = function () { res(); };
+      s.onerror = function () { rej(new Error('could not load ' + url)); };
+      document.body.appendChild(s);
+    });
+  }
+
+  /* ---------------------------------------------------------------- *
+   * The load itself — CHUNK SYSTEM
+   * ---------------------------------------------------------------- */
+  var booted = false, bootedAt = 0, currentStage = 'idle', unityInstance = null;
+
+  function onLoadProgress(p) {
+    var frac = p.total ? p.loaded / p.total : 0;
+    setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + '  (' + Math.round(frac * 100) + '%)');
+    setStatus(p.pass > 1 ? 'Downloading game data (retry ' + p.pass + ')' : 'Downloading game data — chunk ' + p.part + ' of ' + p.parts);
+    currentStage = 'download ' + Math.round(frac * 100) + '%';
+    markStage(currentStage);
+  }
+
+  function datasetParts(spec) {
+    if (spec.base) {
+      return spec.partBytes.map(function (bytes, i) {
+        return { url: abs(spec.base + '.part' + (i + 1)), bytes: bytes };
+      });
+    }
+    // single file (data/wasm) — treat as one part with direct URL
+    if (spec.file) {
+      return [{ url: abs(spec.file), bytes: spec.total }];
+    }
+    return spec.partBytes.map(function (bytes, i) {
+      return { url: abs(BUILD.buildDir + spec.cacheKey + '.part' + (i + 1)), bytes: bytes };
+    });
+  }
+
+  async function loadDatasetWithRetry(spec, onProgress, label) {
+    var lastErr = null;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      var controller = typeof AbortController === 'function' ? new AbortController() : null;
+      var lastProgress = Date.now();
+      var watchdog = setInterval(function () {
+        if (booted) return;
+        if (Date.now() - lastProgress > 120000) {
+          log('no data for 2 minutes — restarting the ' + label + ' download');
+          setStatus('Connection stalled — retrying…');
+          lastProgress = Date.now();
+          if (controller) controller.abort();
+        }
+      }, 15000);
+      try {
+        return await HKStream.ensureDataset({
+          parts: datasetParts(spec),
+          expectedSize: spec.total,
+          cacheKey: spec.cacheKey,
+          buildId: BUILD.id,
+          mime: spec.mime,
+          workerUrl: 'hk-writer.js',
+          signal: controller ? controller.signal : undefined,
+          onProgress: function (p) {
+            lastProgress = Date.now();
+            if (onProgress) onProgress(p);
+          },
+          onStatus: function (s) { setStatus(s); },
+          onLog: log,
+        });
+      } catch (err) {
+        lastErr = err;
+        clearInterval(watchdog);
+        var msg = String((err && err.message) || err);
+        var permanent = /quota|storage|space|not enough|unsupported|not available/i.test(msg);
+        if (attempt >= 3 || permanent) throw err;
+        log('retrying ' + label + ' (' + attempt + '/3) after: ' + msg);
+        setStatus('Connection problem — retrying ' + label + '…');
+        await new Promise(function (r) { setTimeout(r, 2000 + attempt * 2000); });
+      } finally {
+        clearInterval(watchdog);
+      }
+    }
+    throw lastErr || new Error('could not load ' + label);
+  }
+
+  async function loadAndBoot() {
+    try {
+      setStatus('Checking device storage…');
+      caps = await HKStream.detect();
+      log('capabilities', {
+        opfs: caps.opfs, quotaMB: Math.round(caps.quota / 1048576), usedMB: Math.round(caps.usage / 1048576),
+        secure: caps.secure, workers: caps.workers, opfsError: caps.opfsError || undefined, ua: navigator.userAgent,
+      });
+      HKStream.requestPersistence().then(function (granted) { log('persistent storage: ' + granted); });
+
+      var totalNeeded = BUILD.data.total + BUILD.wasm.total + BUILD.aa.total;
+      if (caps.quota && caps.available && caps.available < totalNeeded * 1.05) {
+        log('warning: only ' + mb(caps.available) + ' of quota free — the cache may not fit (' + mb(totalNeeded) + ' needed)');
       }
 
-      update();
+      await cleanupOldCaches();
+
+      /* --- 2. the data chunks (Build) --- */
+      currentStage = 'prepare data';
+      markStage(currentStage);
+      var dataSet = await loadDatasetWithRetry(BUILD.data, onLoadProgress, 'game data');
+      log('data ready via ' + dataSet.kind + ': ' + mb(dataSet.size));
+      if (dataSet.kind === 'memory') {
+        log('warning: no on-device storage available, data is held in RAM');
+        setStatus('Warning: no on-device storage — this may fail');
+        toast('No on-device storage available (private window?). Leave private browsing and reload.', 8000);
+      }
+
+      /* --- 3. the wasm module --- */
+      currentStage = 'prepare wasm';
+      markStage(currentStage);
+      var wasmSet = await loadDatasetWithRetry(
+        BUILD.wasm,
+        function (p) {
+          var frac = p.total ? p.loaded / p.total : 0;
+          setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total));
+        },
+        'game engine'
+      );
+      log('wasm ready via ' + wasmSet.kind + ': ' + mb(wasmSet.size));
+
+      /* --- 3b. Addressables WebGL.zip (the big one) --- */
+      currentStage = 'prepare aa';
+      markStage(currentStage);
+      var aaSet = await loadDatasetWithRetry(
+        BUILD.aa,
+        function(p){
+          var frac = p.total ? p.loaded / p.total : 0;
+          setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + ' (aa ' + p.part + '/' + p.parts + ')');
+          setStatus(p.pass > 1 ? 'Downloading addressables (retry ' + p.pass + ')' : 'Downloading addressables — chunk ' + p.part + ' of ' + p.parts);
+        },
+        'addressables'
+      );
+      log('addressables ready via ' + aaSet.kind + ': ' + mb(aaSet.size));
+      // Extract to Cache API for Unity's Addressables to fetch via fetch() override
+      await unzipAndStore(aaSet.file || aaSet.url);
+
+      /* --- 4. Unity --- */
+      setStatus('Starting the game…');
+      currentStage = 'unity boot';
+      markStage(currentStage);
+      setProgress(0, '');
+      await loadScript(abs(BUILD.loader));
+
+      var config = {
+        dataUrl: dataSet.url,
+        frameworkUrl: abs(BUILD.framework),
+        codeUrl: wasmSet.url,
+        streamingAssetsUrl: abs(BUILD.streamingAssets),
+        companyName: "Team Cherry",
+        productName: "Hollow Knight SilkSong",
+        productVersion: "1.0",
+        // memory settings similar to HK — let wasm declare its own heap
+        webglContextAttributes: {
+          alpha: false,
+          depth: true,
+          stencil: !!compatMode,
+          antialias: false,
+          premultipliedAlpha: false,
+          preserveDrawingBuffer: false,
+          desynchronized: false,
+          powerPreference: isTouch() ? 'low-power' : 'high-performance',
+          failIfMajorPerformanceCaveat: false,
+        },
+        print: function (t) { log(t); },
+        printErr: function (t) { log('warn ' + t); },
+        onAbort: function (what) { logError('unity abort: ' + what); },
+      };
+
+      var instance = await window.createUnityInstance(canvas, config, function (progress) {
+        var pct = Math.round(progress * 100);
+        setStatus('Loading into memory — ' + pct + '%');
+        setProgress(progress, pct + '%');
+        currentStage = 'unity memory ' + pct + '%';
+        if (pct % 10 === 0) markStage(currentStage);
+      });
+      unityInstance = instance;
+      window.unityInstance = instance;
+
+      /* --- 5. done --- */
+      booted = true;
+      bootedAt = nowMs();
+      currentStage = 'running';
+      clearStage();
+      releaseAwake();
+      bgWarn.classList.add('hidden');
+      screenEl.classList.add('hidden');
+      fpsEl.classList.remove('hidden');
+      applyPerf('at boot');
+      applyPad();
+      startFps();
+      startHeartbeat();
+      lastFrameSeenAt = nowMs();
+      log('game booted — ' + perfDescription() + ', canvas ' + canvas.width + '×' + canvas.height);
+      var heap = heapMB();
+      if (heap) log('game memory: ' + heap + ' MB of wasm heap');
+      toast('Tap the screen once so sound can start', 5000);
+      canvas.focus && canvas.focus();
+
+      setTimeout(function () {
+        try { dataSet.dispose(); } catch (e) {}
+        try { wasmSet.dispose(); } catch (e) {}
+        if (aaSet && aaSet.dispose) try { aaSet.dispose(); } catch(e){}
+      }, 5000);
+    } catch (err) {
+      releaseAwake();
+      var message = (err && err.message) || String(err);
+      if (err && err.name === 'AbortError') message = 'Cancelled';
+      logError('load failed: ' + message, err && err.stack ? String(err.stack).split('\n').slice(0, 4).join(' | ') : '');
+      setStatus('Could not load the game');
+      errEl.textContent =
+        message + '\n\n' +
+        (String(message).match(/quota|Quota|space/i)
+          ? 'There is not enough free storage on this device. Free up ~2 GB (Settings ▸ General ▸ iPad Storage) and tap start again.\n\n'
+          : '') +
+        'Details are in the Menu ▸ Log panel. If the tab was killed while loading, the ' +
+        'game data is still cached — tapping start again continues where it stopped.';
+      startBtn.textContent = 'Try again';
+      startBtn.classList.remove('hidden');
+      errEl.classList.remove('hidden');
+      startBtn.onclick = function () { location.reload(); };
+    }
+  }
+
+  async function start() {
+    startBtn.classList.add('hidden');
+    errEl.classList.add('hidden');
+    subEl.classList.add('hidden');
+    notesEl.classList.remove('hidden');
+    primeMediaPlayback();
+    installAudioUnlock();
+    keepAwake();
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock('landscape').catch(function () {});
+      }
+    } catch (e) {}
+    await loadAndBoot();
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Boot
+   * ---------------------------------------------------------------- */
+  (function init() {
+    installAudioGuards();
+    loadPerf();
+    evaluateLastSession();
+    installFrameLimiter();
+    setFrameInterval();
+    applyResolution();
+    applyPad();
+    setChips();
+    refreshPerfRows();
+    if (typeof navigator.getGamepads === 'function') {
+      pollGamepads();
+      gamepadPollTimer = setInterval(pollGamepads, 100);
+    }
+    fpsEl.classList.add('hidden');
+
+    log('Hollow Knight Silksong web loader', 'stream=' + HKStream.VERSION, 'touch=' + isTouch());
+    log('graphics: ' + perfDescription());
+
+    if (lastSessionInfo && lastSessionInfo.crashed) {
+      var mins = Math.max(1, Math.round(lastSessionInfo.playedMs / 60000));
+      toast('The last session stopped unexpectedly after ' + mins + ' min — starting at ' +
+        PRESETS[activePresetIndex()].label + ' to use less memory. Menu ▸ Graphics to change.', 9000);
+    }
+    var prev = lastStage();
+    if (prev && prev.stage) {
+      var age = Math.round((Date.now() - prev.at) / 1000);
+      if (age < 3600 && String(prev.stage).indexOf('hidden') !== 0) {
+        log('previous attempt ended during: ' + prev.stage + ' (' + age + 's ago)');
+        toast('Previous attempt stopped during "' + prev.stage + '"', 6000);
+      }
     }
 
-    const buildUrl = "Build";
-
-    const config = {
-      dataUrl: buildUrl + "/w-pt.data.unityweb",
-      frameworkUrl: buildUrl + "/w-pt.framework.js.unityweb",
-      codeUrl: buildUrl + "/w-pt.wasm.unityweb",
-      streamingAssetsUrl: "StreamingAssets",
-      companyName: "EDUrocks Group, Truffled, GN-Math",
-      productName: "Hollow Knight SilkSong",
-      productVersion: "1.0",
-      showBanner: unityShowBanner,
-    };
-
-    loadingBar.style.display = "block";
-
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/gh/web-ports/hollow-knight-silksong@latest/Build/w-pt.loader.js";
-
-    script.onload = () => {
-      createUnityInstance(canvas, config, (progress) => {
-        progressBarFull.style.width = (progress * 100) + "%";
-      })
-      .then(() => {
-        loadingBar.remove();
-        loadingText.remove();
-      })
-      .catch(alert);
-    };
-
-    document.body.appendChild(script);
-
-  } catch (err) {
-    console.error(err);
-    loadingText.textContent = "ERROR: " + err.message;
-  }
+    HKStream.detect().then(function (c) {
+      caps = c;
+      log('storage: OPFS=' + c.opfs + ' quota=' + (c.quota ? mb(c.quota) : '?') + ' secure=' + c.secure);
+    });
+    resolveAssetBase().then(function () {
+      installUrlRewriter();
+      startBtn.addEventListener('click', function onStart() {
+        startBtn.removeEventListener('click', onStart);
+        start();
+      });
+      log('asset base: ' + (ASSET_BASE || '(this page)'));
+    });
+  })();
 })();
 </script>
-  </body>
+</body>
 </html>
