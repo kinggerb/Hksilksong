@@ -218,7 +218,7 @@
   <div id="logbox"></div>
 </div>
 
-<script src="jszip.js"></script>
+<script src="hk-aa-zip.js"></script>
 <script src="hk-stream.js"></script>
 <script src="hk-save-codec.js"></script>
 <script>
@@ -226,13 +226,14 @@
  * Hollow Knight Silksong — iPad/mobile front-end
  * ----------------------------------------------------------------------------
  * Ported from hollowknightgame/ipad.html (HK chunk + log + ladder systems).
- * Loading is done by hk-stream.js:
+ * Loading is done by hk-stream.js + hk-aa-zip.js:
  *   1. Build files + Addressables WebGL.zip (63 parts ~1239 MB) are streamed
  *      to OPFS (on-device storage) through hk-writer.js — a few MB of RAM,
  *      resumable;
  *   2. the merged files are remembered, so later loads skip the download;
- *   3. Addressables zip is extracted once to Cache API and served via fetch
- *      override; Unity gets ONE file-backed blob URL for data/wasm.
+ *   3. WebGL.zip is mounted in place on OPFS (~64 KB RAM, ~2 ms) and each
+ *      .bundle is stream-decompressed on demand via fetch override; Unity
+ *      gets file-backed streaming for data/wasm with zero duplicate caches.
  * ==========================================================================*/
 (function () {
   'use strict';
@@ -270,7 +271,7 @@
     },
   };
 
-  var FALLBACK_BASE = 'https://cdn.jsdelivr.net/gh/web-ports/hollow-knight-silksong@master/';
+  var FALLBACK_BASE = 'https://cdn.jsdelivr.net/gh/kinggerb/Hksilksong@main/';
   var params = new URLSearchParams(location.search);
   var ASSET_BASE = params.get('base') || '';
   var useRewriter = false;
@@ -374,83 +375,64 @@
   }
 
   /* ---------------------------------------------------------------- *
-   * Addressables: Cache API serving of extracted bundles
+   * Addressables: zero-copy OPFS ZIP mount + on-demand streaming fetch
    * ---------------------------------------------------------------- */
   var CACHE_NAME = "hksilksongcache-v2";
-  var aaExtracted = false;
-
-  async function isAaCached() {
-    try {
-      var cache = await caches.open(CACHE_NAME);
-      var done = await cache.match("CACHE_COMPLETE");
-      return !!done;
-    } catch (e) { return false; }
-  }
+  var aaArchive = null;
 
   async function cleanupOldCaches() {
     try {
+      if (typeof caches === "undefined" || !caches.keys) return;
       var cacheNames = await caches.keys();
-      await Promise.all(cacheNames.map(function(name){
-        if (name !== CACHE_NAME && name.includes("hksilksong")) {
-          log("Deleting old cache: " + name);
+      await Promise.all(cacheNames.map(function (name) {
+        if (name.indexOf("hksilksong") !== -1 || name.indexOf("UnityCache") === 0) {
+          log("Deleting redundant cache store: " + name);
           return caches.delete(name);
         }
+        return Promise.resolve();
       }));
-    } catch(e){}
+    } catch (e) {}
   }
 
-  /* Fetch override for addressables: serve from Cache API when present */
-  (function installFetchOverride(){
+  /* Fetch override for addressables: stream bundles directly out of OPFS WebGL.zip */
+  (function installFetchOverride() {
     var originalFetch = window.fetch;
-    window.fetch = async function(resource, options){
-      var url = typeof resource === "string" ? resource : resource.url;
-      var cleanPath = url.split("/").pop().split("?")[0].split("#")[0];
-      try {
-        var cache = await caches.open(CACHE_NAME);
-        var cachedResponse = await cache.match(cleanPath);
-        if (cachedResponse) return cachedResponse;
-      } catch(e){}
-      return originalFetch(resource, options);
+    window.fetch = function (resource, options) {
+      if (aaArchive) {
+        var url = typeof resource === "string" ? resource : (resource && resource.url) || "";
+        if (aaArchive.has(url)) {
+          var reqOpts = options || (typeof resource === "object" && resource ? { method: resource.method, signal: resource.signal } : undefined);
+          return Promise.resolve(aaArchive.openResponse(url, reqOpts));
+        }
+      }
+      return originalFetch.call(window, resource, options);
     };
     window._hkOriginalFetch = originalFetch;
   })();
 
-  async function unzipAndStore(zipFile) {
-    // zipFile is a File from OPFS
-    if (await isAaCached()) {
-      log("Addressables already extracted — skipping unzip");
-      aaExtracted = true;
-      return;
+  async function mountAddressablesZip(aaSet) {
+    setStatus("Mounting addressables archive…");
+    var blob = aaSet && aaSet.file;
+    if (!blob && aaSet && aaSet.url) {
+      var res = await window._hkOriginalFetch.call(window, aaSet.url);
+      blob = await res.blob();
     }
-    var blob = zipFile.slice ? zipFile : new Blob([zipFile]);
-    // For large zip, use arrayBuffer -> JSZip.loadAsync; JSZip handles ~2GB but batched writes keep peak lower than old approach (which merged + extracted in RAM triple)
-    setStatus("Preparing addressables…");
-    var arrayBuf = await blob.arrayBuffer();
-    setStatus("Extracting addressables…");
-    var zip = await JSZip.loadAsync(arrayBuf);
-    var files = Object.values(zip.files).filter(function(f){ return !f.dir; });
-    var total = files.length;
-    var cache = await caches.open(CACHE_NAME);
-    var processed = 0;
-    var batchSize = 10;
-    for (var i = 0; i < files.length; i += batchSize) {
-      var batch = files.slice(i, i + batchSize);
-      await Promise.all(batch.map(async function(file){
-        try {
-          var b = await file.async("blob");
-          await cache.put(file.name, new Response(b));
-        } catch (e) {
-          console.error("Failed:", file.name, e);
-        }
-        processed++;
-        setStatus("Extracting addressables… (" + processed + "/" + total + ")");
-        setProgress(processed/total, "Extracting " + processed + "/" + total);
-      }));
-      await new Promise(function(r){ setTimeout(r,0); });
+    if (!blob) {
+      throw new Error("Addressables archive file handle is unavailable");
     }
-    await cache.put("CACHE_COMPLETE", new Response("ok"));
-    aaExtracted = true;
-    log("Cache complete: " + total + " addressables extracted");
+    aaArchive = await HKAaZip.open(blob, {
+      reopenBlob: function () {
+        return HKStream.getFile(BUILD.aa.cacheKey);
+      },
+    });
+    log(
+      "addressables mounted in place: " +
+        aaArchive.count +
+        " bundles (" +
+        mb(aaArchive.totalUncompressed) +
+        " uncompressed) via " +
+        aaArchive.engine
+    );
   }
 
   /* ---------------------------------------------------------------- *
@@ -935,27 +917,6 @@
     } catch (e) {
       logError('UnloadUnusedAssets failed: ' + ((e && e.message) || e));
     }
-    var table = Module.asm.Zi;
-    if (table && typeof table.get === 'function') {
-      try {
-        var unloadUnusedAssets = table.get(46728);
-        if (typeof unloadUnusedAssets === 'function') {
-          unloadUnusedAssets(0);
-          ran = true;
-        }
-      } catch (e) {
-        logError('Resources.UnloadUnusedAssets (wasmTable 46728) failed: ' + ((e && e.message) || e));
-      }
-      try {
-        var gcCollect = table.get(56071);
-        if (typeof gcCollect === 'function') {
-          gcCollect(0);
-          ran = true;
-        }
-      } catch (e) {
-        logError('System.GC.Collect (wasmTable 56071) failed: ' + ((e && e.message) || e));
-      }
-    }
     if (ran) log('memory cleanup: ran GC / UnloadUnusedAssets');
     return ran;
   }
@@ -998,7 +959,7 @@
    * ---------------------------------------------------------------- */
   var sessionStart = 0;
   var heartbeatTimer = 0;
-  var DATA_MB = 1239; // addressables zip + build data
+  var DATA_MB = 45; // unpacked w-pt.data in MEMFS (WebGL.zip stays on OPFS disk)
 
   function unityModule() {
     var inst = unityInstance || (typeof window !== 'undefined' ? window.unityInstance : null);
@@ -1010,6 +971,7 @@
       if (m) {
         if (m.HEAPU8 && m.HEAPU8.length) return Math.round(m.HEAPU8.length / 1048576);
         if (m.wasmMemory && m.wasmMemory.buffer) return Math.round(m.wasmMemory.buffer.byteLength / 1048576);
+        if (m.asm && m.asm.Kk && m.asm.Kk.buffer) return Math.round(m.asm.Kk.buffer.byteLength / 1048576);
         if (m.asm && m.asm.Ai && m.asm.Ai.buffer) return Math.round(m.asm.Ai.buffer.byteLength / 1048576);
       }
     } catch (e) {}
@@ -1024,15 +986,21 @@
     if (died) {
       return {
         warn: Math.round(died * 0.80),
-        alarm: Math.round(died * 0.95),
+        alarm: Math.max(1200, Math.round(died * 0.94)),
         crashHeap: died,
         learned: true,
       };
     }
-    return { warn: 1000, alarm: 1400, crashHeap: null, learned: false };
+    return { warn: 1800, alarm: 2600, crashHeap: null, learned: false };
   }
 
-  var HARD_MEMORY_CAP_MB = 1400;
+  var explicitMemCap = parseInt(params.get('memcap') || '', 10);
+  var HARD_MEMORY_CAP_MB = isFinite(explicitMemCap) && explicitMemCap > 0 ? explicitMemCap : 2600;
+  function effectiveMemoryCapMB() {
+    if (isFinite(explicitMemCap) && explicitMemCap > 0) return explicitMemCap;
+    var limits = memoryLimits();
+    return limits.learned ? limits.alarm : HARD_MEMORY_CAP_MB;
+  }
   var memCapTimer = 0;
   var memCapSeconds = 0;
 
@@ -1051,10 +1019,11 @@
     }
   }
 
-  function startMemoryCapReload(heap) {
+  function startMemoryCapReload(heap, cap) {
     if (memCapTimer) return;
+    cleanupMemory();
     memCapSeconds = 5;
-    log('hard memory cap reached (' + heap + ' MB > ' + HARD_MEMORY_CAP_MB + ' MB) — reloading in 5s');
+    log('hard memory cap reached (' + heap + ' MB > ' + (cap || effectiveMemoryCapMB()) + ' MB) — reloading in 5s');
     updateMemCapCorner();
     memCapTimer = setInterval(function () {
       memCapSeconds--;
@@ -1086,8 +1055,9 @@
       visible: !document.hidden,
     };
     writeStore(HEARTBEAT_KEY, JSON.stringify(hb));
-    if (booted && hb.heap !== null && hb.heap > HARD_MEMORY_CAP_MB) {
-      startMemoryCapReload(hb.heap);
+    var cap = effectiveMemoryCapMB();
+    if (booted && hb.heap !== null && hb.heap > cap) {
+      startMemoryCapReload(hb.heap, cap);
     }
     return hb;
   }
@@ -1286,13 +1256,15 @@
       });
       if (info.error) rows.push(['cache error', info.error]);
     }
-    // also show Cache API status for addressables
-    try {
-      var c = await caches.open(CACHE_NAME);
-      var keys = await c.keys();
-      rows.push(['addressables cached', keys.length ? keys.length + ' files' : 'not yet']);
-      if (await c.match("CACHE_COMPLETE")) rows.push(['addressables', 'extracted ✓']);
-    } catch(e){}
+    // Show OPFS ZIP streaming mount status
+    if (aaArchive) {
+      rows.push([
+        'addressables archive',
+        aaArchive.count + ' bundles · ' + mb(aaArchive.totalUncompressed) + ' (' + aaArchive.engine + ')',
+      ]);
+    } else {
+      rows.push(['addressables archive', 'not mounted yet']);
+    }
     var html = '';
     rows.forEach(function (r) {
       html += '<div class="row"><span>' + r[0] + '</span><span>' + r[1] + '</span></div>';
@@ -1367,8 +1339,9 @@
     toast('Reload to apply compatibility mode');
   });
   $('clearBtn').addEventListener('click', async function () {
+    aaArchive = null;
     var okDone = await HKStream.clearCache();
-    try { await caches.delete(CACHE_NAME); } catch(e){}
+    await cleanupOldCaches();
     clearStage();
     toast(okDone ? 'Cached game data deleted — reload and it will download again' : 'Nothing to delete');
     refreshStoreRows();
@@ -1989,6 +1962,95 @@
     throw lastErr || new Error('could not load ' + label);
   }
 
+  function makeStreamingWasmInstantiator(wasmSet, onFail) {
+    return function instantiateWasm(imports, receiveInstance) {
+      (async function () {
+        var blob = wasmSet && wasmSet.file;
+        if (!blob && wasmSet && wasmSet.url) {
+          var fetched = await window._hkOriginalFetch.call(window, wasmSet.url);
+          blob = await fetched.blob();
+        }
+        if (!blob) throw new Error('WASM binary blob unavailable');
+
+        var hdr = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+        var isGzip = hdr.length >= 2 && hdr[0] === 0x1f && hdr[1] === 0x8b;
+
+        if (typeof WebAssembly.instantiateStreaming === 'function' && (!isGzip || typeof DecompressionStream === 'function')) {
+          try {
+            var pos = 0;
+            var end = blob.size;
+            var chunkStream = new ReadableStream({
+              pull: async function (controller) {
+                if (pos >= end) { controller.close(); return; }
+                var next = Math.min(end, pos + 262144);
+                var ab = await blob.slice(pos, next).arrayBuffer();
+                pos = next;
+                controller.enqueue(new Uint8Array(ab));
+              },
+            });
+            var wasmStream = isGzip ? chunkStream.pipeThrough(new DecompressionStream('gzip')) : chunkStream;
+            var streamed = await WebAssembly.instantiateStreaming(
+              new Response(wasmStream, { headers: { 'Content-Type': 'application/wasm' } }),
+              imports
+            );
+            receiveInstance(streamed.instance, streamed.module);
+            return;
+          } catch (streamErr) {
+            log('wasm streaming compile fallback: ' + ((streamErr && streamErr.message) || streamErr));
+          }
+        }
+
+        // Fallback for older browsers without DecompressionStream / instantiateStreaming
+        var wasmBytes;
+        if (!isGzip) {
+          wasmBytes = new Uint8Array(await blob.arrayBuffer());
+        } else {
+          var headBuf = new Uint8Array(await blob.slice(0, Math.min(blob.size, 4096)).arrayBuffer());
+          var flg = headBuf[3];
+          var off = 10;
+          if (flg & 0x04) off += 2 + (headBuf[off] | (headBuf[off + 1] << 8));
+          if (flg & 0x08) { while (off < headBuf.length && headBuf[off] !== 0) off++; off++; }
+          if (flg & 0x10) { while (off < headBuf.length && headBuf[off] !== 0) off++; off++; }
+          if (flg & 0x02) off += 2;
+          var defPos = off;
+          var defEnd = blob.size - 8; // strip 8-byte CRC32+ISIZE trailer
+          var rawSrc = new ReadableStream({
+            pull: async function (controller) {
+              if (defPos >= defEnd) { controller.close(); return; }
+              var next = Math.min(defEnd, defPos + 262144);
+              var ab = await blob.slice(defPos, next).arrayBuffer();
+              defPos = next;
+              controller.enqueue(new Uint8Array(ab));
+            },
+          });
+          var reader = HKAaZip._internals.createJsRawInflateStream(rawSrc).getReader();
+          var parts = [];
+          var totalLen = 0;
+          for (;;) {
+            var r = await reader.read();
+            if (r.done) break;
+            parts.push(r.value);
+            totalLen += r.value.byteLength;
+          }
+          wasmBytes = new Uint8Array(totalLen);
+          var writeAt = 0;
+          for (var i = 0; i < parts.length; i++) {
+            wasmBytes.set(parts[i], writeAt);
+            writeAt += parts[i].byteLength;
+            parts[i] = null;
+          }
+        }
+        var compiled = await WebAssembly.instantiate(wasmBytes, imports);
+        wasmBytes = null;
+        receiveInstance(compiled.instance, compiled.module);
+      })().catch(function (err) {
+        logError('instantiateWasm failed: ' + ((err && err.message) || err));
+        if (onFail) onFail(err);
+      });
+      return {};
+    };
+  }
+
   async function loadAndBoot() {
     try {
       setStatus('Checking device storage…');
@@ -2030,21 +2092,33 @@
       );
       log('wasm ready via ' + wasmSet.kind + ': ' + mb(wasmSet.size));
 
-      /* --- 3b. Addressables WebGL.zip (the big one) --- */
+      /* --- 3b. Addressables WebGL.zip (streamed to OPFS & mounted in place) --- */
       currentStage = 'prepare aa';
       markStage(currentStage);
-      var aaSet = await loadDatasetWithRetry(
-        BUILD.aa,
-        function(p){
-          var frac = p.total ? p.loaded / p.total : 0;
-          setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + ' (aa ' + p.part + '/' + p.parts + ')');
-          setStatus(p.pass > 1 ? 'Downloading addressables (retry ' + p.pass + ')' : 'Downloading addressables — chunk ' + p.part + ' of ' + p.parts);
-        },
-        'addressables'
-      );
+      function onAaProgress(p) {
+        var frac = p.total ? p.loaded / p.total : 0;
+        var pct = Math.round(frac * 100);
+        setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + ' (aa ' + p.part + '/' + p.parts + ')');
+        setStatus(p.pass > 1 ? 'Downloading addressables (retry ' + p.pass + ')' : 'Downloading addressables — chunk ' + p.part + ' of ' + p.parts);
+        currentStage = 'download aa ' + pct + '%';
+        markStage(currentStage);
+      }
+      var aaSet = await loadDatasetWithRetry(BUILD.aa, onAaProgress, 'addressables');
       log('addressables ready via ' + aaSet.kind + ': ' + mb(aaSet.size));
-      // Extract to Cache API for Unity's Addressables to fetch via fetch() override
-      await unzipAndStore(aaSet.file || aaSet.url);
+
+      currentStage = 'mount aa';
+      markStage(currentStage);
+      try {
+        await mountAddressablesZip(aaSet);
+      } catch (mountErr) {
+        logError('cached WebGL.zip was unreadable (' + ((mountErr && mountErr.message) || mountErr) + ') — clearing and re-downloading');
+        try { aaSet.dispose(); } catch (e) {}
+        await HKStream.clearCache();
+        dataSet = await loadDatasetWithRetry(BUILD.data, onLoadProgress, 'game data');
+        wasmSet = await loadDatasetWithRetry(BUILD.wasm, null, 'game engine');
+        aaSet = await loadDatasetWithRetry(BUILD.aa, onAaProgress, 'addressables');
+        await mountAddressablesZip(aaSet);
+      }
 
       /* --- 4. Unity --- */
       setStatus('Starting the game…');
@@ -2052,6 +2126,9 @@
       markStage(currentStage);
       setProgress(0, '');
       await loadScript(abs(BUILD.loader));
+
+      var rejectBoot = null;
+      var wasmFailed = new Promise(function (_, rej) { rejectBoot = rej; });
 
       var config = {
         dataUrl: dataSet.url,
@@ -2061,6 +2138,8 @@
         companyName: "Team Cherry",
         productName: "Hollow Knight SilkSong",
         productVersion: "1.0",
+        cacheControl: function () { return 'no-store'; },
+        instantiateWasm: makeStreamingWasmInstantiator(wasmSet, rejectBoot),
         // memory settings similar to HK — let wasm declare its own heap
         webglContextAttributes: {
           alpha: false,
@@ -2078,13 +2157,16 @@
         onAbort: function (what) { logError('unity abort: ' + what); },
       };
 
-      var instance = await window.createUnityInstance(canvas, config, function (progress) {
-        var pct = Math.round(progress * 100);
-        setStatus('Loading into memory — ' + pct + '%');
-        setProgress(progress, pct + '%');
-        currentStage = 'unity memory ' + pct + '%';
-        if (pct % 10 === 0) markStage(currentStage);
-      });
+      var instance = await Promise.race([
+        window.createUnityInstance(canvas, config, function (progress) {
+          var pct = Math.round(progress * 100);
+          setStatus('Loading into memory — ' + pct + '%');
+          setProgress(progress, pct + '%');
+          currentStage = 'unity memory ' + pct + '%';
+          if (pct % 10 === 0) markStage(currentStage);
+        }),
+        wasmFailed,
+      ]);
       unityInstance = instance;
       window.unityInstance = instance;
 

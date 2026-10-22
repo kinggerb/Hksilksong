@@ -69,7 +69,7 @@ function createUnityInstance(t, n, l) {
     e(n, "productVersion", "1.0"),
     n)
         b[o] = n[o];
-    b.streamingAssetsUrl = new URL("StreamingAssets",document.querySelector('base').href).href;
+    b.streamingAssetsUrl = new URL((b.streamingAssetsUrl || "StreamingAssets").replace(/\/+$/, ""), document.querySelector("base") ? document.querySelector("base").href : location.href).href;
     var a = b.disabledCanvasEvents.slice();
     function i(e) {
         e.preventDefault()
@@ -288,14 +288,16 @@ function createUnityInstance(t, n, l) {
     Error.stackTraceLimit = Math.max(Error.stackTraceLimit || 0, 50),
     b.readBodyWithProgress = function(a, i, s) {
         var e = a.body ? a.body.getReader() : void 0
-          , l = void 0 !== a.headers.get("Content-Length")
+          , rawLen = a.headers.get("Content-Length")
+          , hasLen = null !== rawLen && void 0 !== rawLen
+          , l = !0
           , c = function(e, t) {
             if (!t)
                 return 0;
-            var t = e.headers.get("Content-Encoding")
-              , n = parseInt(e.headers.get("Content-Length"))
+            var enc = e.headers.get("Content-Encoding")
+              , n = parseInt(rawLen, 10) || 0
               , r = 536870912;
-            switch (t) {
+            switch (enc) {
             case "br":
                 return Math.min(Math.round(2 * n), r);
             case "gzip":
@@ -303,26 +305,28 @@ function createUnityInstance(t, n, l) {
             default:
                 return n
             }
-        }(a, l)
-          , d = new Uint8Array(c)
+        }(a, hasLen)
+          , d = s ? null : new Uint8Array(c)
           , u = []
           , f = 0
           , h = 0;
-        return l || console.warn("[UnityCache] Response is served without Content-Length header. Please reconfigure server to include valid Content-Length for better download performance."),
+        return hasLen || console.warn("[UnityCache] Response is served without Content-Length header. Please reconfigure server to include valid Content-Length for better download performance."),
         function o() {
             return void 0 === e ? a.arrayBuffer().then(function(e) {
                 var t = new Uint8Array(e);
                 return i({
                     type: "progress",
                     response: a,
-                    total: e.length,
+                    total: t.length,
                     loaded: 0,
                     lengthComputable: l,
                     chunk: s ? t : null
                 }),
-                t
+                s ? { length: t.length } : t
             }) : e.read().then(function(e) {
                 if (e.done) {
+                    if (s)
+                        return { length: f };
                     if (f === c)
                         return d;
                     if (f < c)
@@ -333,8 +337,8 @@ function createUnityInstance(t, n, l) {
                         n += u[r].length;
                     return t
                 }
-                return f + e.value.length <= d.length ? (d.set(e.value, f),
-                h = f + e.value.length) : u.push(e.value),
+                return s || (f + e.value.length <= d.length ? (d.set(e.value, f),
+                h = f + e.value.length) : u.push(e.value)),
                 f += e.value.length,
                 i({
                     type: "progress",
@@ -582,10 +586,13 @@ function createUnityInstance(t, n, l) {
     y = b.fetchWithProgress,
     k = b.readBodyWithProgress,
     function(o, a) {
-        var e, t, i = v.getInstance(), s = U("string" == typeof o ? o : o.url), l = {
+        var e, t, s = U("string" == typeof o ? o : o.url), l = {
             enabled: (e = s,
             (!(t = a) || !t.method || "GET" === t.method) && ((!t || -1 != ["must-revalidate", "immutable"].indexOf(t.control)) && !!e.match("^https?://")))
         };
+        if (!l.enabled)
+            return y(o, a);
+        var i = v.getInstance();
         function c(n, r) {
             return fetch(n, r).then(function(e) {
                 var t;
@@ -2107,7 +2114,7 @@ function createUnityInstance(t, n, l) {
                 } catch (e) {}
             },
             hasUnityMarker: function(e) {
-                return true
+                return !!(e && e.length >= 2 && 31 === e[0] && 139 === e[1])
             }
         },
         br: {
@@ -2231,9 +2238,10 @@ function createUnityInstance(t, n, l) {
                 })
             }
             )
-        }), T("codeUrl")]).then(function(e) {
-            b.wasmBinary = e[1],
+        }), b.instantiateWasm ? Promise.resolve(void 0) : T("codeUrl")]).then(function(e) {
+            e[1] && (b.wasmBinary = e[1]),
             e[0](b),
+            delete b.wasmBinary,
             b.codeDownloadTimeEnd = performance.now() - t
         }),
         performance.now())
@@ -2273,6 +2281,8 @@ function createUnityInstance(t, n, l) {
                         b.FS_createPath(u.substring(0, f), u.substring(f, h - 1), !0, !0);
                     b.FS_createDataFile(u, null, t.subarray(l, l + c), !0, !0, !0)
                 }
+                A.gzip.worker && (A.gzip.worker.terminate(),
+                delete A.gzip.worker),
                 b.removeRunDependency("dataUrl"),
                 b.dataUrlLoadEndTime = performance.now() - m
             })
