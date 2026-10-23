@@ -1,0 +1,8 @@
+# The addressables container ships as ~16 MB chunks of already-compressed data.
+# Telling git (and GitHub) they are binary keeps it from trying to diff or
+# merge them as text, which is what makes large pulls unmergeable on the hub.
+StreamingAssets/aa/*.part* binary
+StreamingAssets/aa/*.hkar binary
+*.unityweb binary
+*.bundle binary
+*.wasm binary

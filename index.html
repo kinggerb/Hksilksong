@@ -127,7 +127,7 @@
   <div id="status">Tap start to begin.</div>
   <div id="bar"><i></i></div>
   <div id="pct"></div>
-  <div id="sub">First run downloads ~1239 MB once and stores it on this device, so every
+  <div id="sub">First run downloads ~1099 MB once and stores it on this device, so every
     later load starts without downloading again.</div>
   <button class="main" id="startBtn">Start</button>
   <div id="notes">
@@ -226,14 +226,14 @@
  * Hollow Knight Silksong — iPad/mobile front-end
  * ----------------------------------------------------------------------------
  * Ported from hollowknightgame/ipad.html (HK chunk + log + ladder systems).
- * Loading is done by hk-stream.js + hk-aa-zip.js:
- *   1. Build files + Addressables WebGL.zip (63 parts ~1239 MB) are streamed
- *      to OPFS (on-device storage) through hk-writer.js — a few MB of RAM,
- *      resumable;
+ * Loading is done by hk-stream.js:
+ *   1. Build files + the Addressables container (assets.hkar, ~1099 MB in
+ *      69 parallel chunks) are streamed to OPFS (on-device storage) through
+ *      hk-writer.js — a few MB of RAM, resumable;
  *   2. the merged files are remembered, so later loads skip the download;
- *   3. WebGL.zip is mounted in place on OPFS (~64 KB RAM, ~2 ms) and each
- *      .bundle is stream-decompressed on demand via fetch override; Unity
- *      gets file-backed streaming for data/wasm with zero duplicate caches.
+ *   3. each addressable bundle is xz-decoded straight out of the container on
+ *      first use (hk-unpack.js worker), cached in the Cache API and served via
+ *      the fetch override; Unity gets ONE file-backed blob URL for data/wasm.
  * ==========================================================================*/
 (function () {
   'use strict';
@@ -241,7 +241,7 @@
   /* ---------------------------------------------------------------- *
    * Build description (must match the Build/ folder + StreamingAssets)
    * ---------------------------------------------------------------- */
-  var PART = 20866662; // size of every chunk except the last one of each file
+  var PART = 16777216; // size of every chunk except the last one of each file
   var BUILD = {
     id: 'hksilksong-webgl-2026-10-18-lite', // bump to invalidate old OPFS caches
     buildDir: 'Build/',
@@ -263,11 +263,12 @@
       total: 20192325,
     },
     aa: {
-      cacheKey: 'WebGL.zip',
+      cacheKey: 'assets.hkar',
       mime: 'application/octet-stream',
-      base: 'StreamingAssets/aa/WebGL.zip',
-      partBytes: new Array(62).fill(PART).concat([5175252]),
-      total: 1298908296,
+      base: 'StreamingAssets/aa/assets.hkar',
+      concurrency: 6,
+      partBytes: new Array(68).fill(PART).concat([11093098]),
+      total: 1151943786,
     },
   };
 
@@ -375,65 +376,281 @@
   }
 
   /* ---------------------------------------------------------------- *
-   * Addressables: zero-copy OPFS ZIP mount + on-demand streaming fetch
+   * Addressables: the .hkar container
+   *
+   * The old path was: download a 1.24 GB zip -> arrayBuffer() the whole
+   * thing -> JSZip.loadAsync -> hand every bundle to the Cache API.  That
+   * needed ~2.5 GB of RAM, froze the tab and could not start until the last
+   * byte had arrived.
+   *
+   * Now the download is a single compressed container (see
+   * tools/build_hkar.py).  We only read its 32 byte footer to learn where the
+   * index is; each bundle is then sliced out of the file on demand and
+   * decoded in a worker.  Nothing is ever fully materialised on the main
+   * thread.
    * ---------------------------------------------------------------- */
-  var CACHE_NAME = "hksilksongcache-v2";
-  var aaArchive = null;
+  var CACHE_NAME = "hksilksongcache-v3";
+  var archive = null;        // {size, file, entries, names, rawBytes}
+  var archiveJobs = {};      // bundle name -> in-flight decode promise
+  var unpackQueue = [];      // queued decodes
+  var unpackWorkers = [];
+  var UNPACK_WORKERS = 2;
+  var PREFETCH_MAX = 8;    // biggest bundles decoded ahead of time
+
+  function isAaCached() {
+    return !!archive;
+  }
 
   async function cleanupOldCaches() {
     try {
       if (typeof caches === "undefined" || !caches.keys) return;
       var cacheNames = await caches.keys();
       await Promise.all(cacheNames.map(function (name) {
-        if (name.indexOf("hksilksong") !== -1 || name.indexOf("UnityCache") === 0) {
+        if (name !== CACHE_NAME &&
+            (name.indexOf("hksilksong") !== -1 || name.indexOf("UnityCache") === 0)) {
           log("Deleting redundant cache store: " + name);
           return caches.delete(name);
         }
         return Promise.resolve();
       }));
-    } catch (e) {}
+    } catch(e){}
+    // the 1.24 GB zip and its extraction marker are dead weight now
+    var stale = ["WebGL.zip", "WebGL.zip.ok", "WebGL.zip.building"];
+    for (var i = 0; i < stale.length; i++) {
+      if (await HKStream.dropEntry(stale[i])) log("Freed " + stale[i] + " from on-device storage");
+    }
   }
 
-  /* Fetch override for addressables: stream bundles directly out of OPFS WebGL.zip */
-  (function installFetchOverride() {
-    var originalFetch = window.fetch;
-    window.fetch = function (resource, options) {
-      if (aaArchive) {
-        var url = typeof resource === "string" ? resource : (resource && resource.url) || "";
-        if (aaArchive.has(url)) {
-          var reqOpts = options || (typeof resource === "object" && resource ? { method: resource.method, signal: resource.signal } : undefined);
-          return Promise.resolve(aaArchive.openResponse(url, reqOpts));
-        }
+  /* ---- container reader ---------------------------------------------- */
+
+  function readBytes(file, at, len) {
+    return file.slice(at, at + len).arrayBuffer().then(function (b) {
+      return new Uint8Array(b);
+    });
+  }
+
+  function decodeName(u8) {
+    try { return new TextDecoder("utf-8").decode(u8); } catch (e) { return ""; }
+  }
+
+  async function installArchive(src) {
+    var file = src;
+    if (typeof src === "string") {
+      // RAM fallback hands us a blob URL rather than a File
+      var got = await (window._hkOriginalFetch || window.fetch)(src);
+      if (!got.ok) throw new Error("could not read the archive: HTTP " + got.status);
+      file = await got.blob();
+    }
+    if (!file || !file.size) throw new Error("no archive file");
+    if (file.size < 32) throw new Error("archive is truncated");
+    var foot = await readBytes(file, file.size - 32, 32);
+    var magic = decodeName(foot.subarray(0, 8));
+    if (magic !== "HKAR0001") throw new Error("not an hkar archive (magic " + magic + ")");
+    var fv = new DataView(foot.buffer, foot.byteOffset, foot.byteLength);
+    var count = fv.getUint32(8, true);
+    var indexOff = Number(fv.getBigUint64(16, true));
+    var indexLen = Number(fv.getBigUint64(24, true));
+    if (indexOff + indexLen > file.size) throw new Error("archive index is out of range");
+
+    var index = await readBytes(file, indexOff, indexLen);
+    var iv = new DataView(index.buffer, index.byteOffset, index.byteLength);
+    var entries = {}, names = [], rawBytes = 0, p = 0;
+    for (var i = 0; i < count; i++) {
+      var nameLen = iv.getUint16(p, true);
+      var e = {
+        codec: index[p + 2],
+        off: Number(iv.getBigUint64(p + 8, true)),
+        comp: Number(iv.getBigUint64(p + 16, true)),
+        raw: Number(iv.getBigUint64(p + 24, true)),
+        crc: iv.getUint32(p + 32, true),
+      };
+      p += 36;
+      var name = decodeName(index.subarray(p, p + nameLen));
+      p += nameLen;
+      entries[name] = e;
+      names.push(name);
+      rawBytes += e.raw;
+    }
+    archive = { size: file.size, file: file, entries: entries, names: names, rawBytes: rawBytes };
+    log("archive ready: " + count + " bundles, " + mb(file.size) + " on disk, " +
+        mb(rawBytes) + " of bundles");
+    return archive;
+  }
+
+  /* ---- decode workers ------------------------------------------------ */
+
+  var archiveFallback = {};   // name -> ArrayBuffer for entries the cache would not take
+  var fallbackBytes = 0;
+  var FALLBACK_BUDGET = 1024 * 1024 * 1024;
+
+  function rememberFallback(name, buf) {
+    if (!buf) return;
+    if (fallbackBytes + buf.byteLength > FALLBACK_BUDGET) {
+      // drop everything rather than grow without bound
+      archiveFallback = {};
+      fallbackBytes = 0;
+      return;
+    }
+    archiveFallback[name] = buf;
+    fallbackBytes += buf.byteLength;
+  }
+
+  function idleWorker() {
+    for (var i = 0; i < unpackWorkers.length; i++) {
+      if (!unpackWorkers[i].busy) return unpackWorkers[i];
+    }
+    if (unpackWorkers.length >= UNPACK_WORKERS) return null;
+    var w;
+    try { w = new Worker("hk-unpack.js"); } catch (e) { return null; }
+    w.busy = false;
+    w.onmessage = function (ev) {
+      var job = w.job;
+      w.busy = false;
+      w.job = null;
+      if (job) {
+        if (ev.data && ev.data.ok) job.resolve(ev.data);
+        else job.reject(new Error((ev.data && ev.data.error) || "unpack failed"));
       }
-      return originalFetch.call(window, resource, options);
+      pumpUnpack();
+    };
+    w.onerror = function (ev) {
+      var job = w.job;
+      w.busy = false;
+      w.job = null;
+      // a crashed worker can never answer again - drop it so a fresh one is made
+      var k = unpackWorkers.indexOf(w);
+      if (k >= 0) unpackWorkers.splice(k, 1);
+      try { w.terminate(); } catch (e) {}
+      log("unpack worker error: " + ((ev && ev.message) || "unknown"));
+      if (job) job.reject(new Error("unpack worker crashed"));
+      pumpUnpack();
+    };
+    unpackWorkers.push(w);
+    return w;
+  }
+
+  function pumpUnpack() {
+    while (unpackQueue.length) {
+      var w = idleWorker();
+      if (!w) {
+        // all workers busy is normal; no worker at all never resolves
+        if (unpackWorkers.length) return;
+        var dead = unpackQueue.splice(0);
+        for (var d = 0; d < dead.length; d++) {
+          dead[d].reject(new Error("no unpack worker available"));
+        }
+        return;
+      }
+      var job = unpackQueue.shift();
+      var e = job.entry;
+      w.busy = true;
+      w.job = job;
+      w.postMessage({
+        id: unpackWorkers.indexOf(w),
+        file: archive.file,
+        off: e.off,
+        comp: e.comp,
+        raw: e.raw,
+        name: job.name,
+        cacheName: CACHE_NAME,
+      });
+    }
+  }
+
+  function unpackBundle(name) {
+    var e = archive.entries[name];
+    if (!e) return Promise.reject(new Error("bundle not in the archive: " + name));
+    return new Promise(function (resolve, reject) {
+      unpackQueue.push({ name: name, entry: e, resolve: resolve, reject: reject });
+      pumpUnpack();
+    });
+  }
+
+  /* Serve one bundle: cache first, then decode it out of the container.
+     A fresh Response is returned per call - response bodies are one-shot. */
+  function bundleFromArchive(name, cache) {
+    var job = archiveJobs[name];
+    if (!job) {
+      var started = Date.now();
+      job = unpackBundle(name).then(function (r) {
+        if (!r.cached) rememberFallback(name, r.buf);
+        var ms = Date.now() - started;
+        if (ms > 1200) log("unpacked " + name + " in " + ms + " ms (" + mb(r.size) + ")");
+        return r;
+      });
+      archiveJobs[name] = job;
+      job.then(function () {
+        // keep the result for repeat hits, but not the promise forever
+        setTimeout(function () { delete archiveJobs[name]; }, 60000);
+      }, function () { delete archiveJobs[name]; });
+    }
+    return job.then(function () {
+      var buf = archiveFallback[name];
+      if (buf) return new Response(buf, { headers: { "Content-Type": "application/octet-stream" } });
+      return cache.match(name).then(function (res) {
+        if (!res) throw new Error("bundle missing from cache after unpack: " + name);
+        return res;
+      });
+    });
+  }
+
+  /* After boot, quietly decode the biggest bundles before anything asks for
+     them: a 1.5 GB scene bundle costs ~20 s of wasm time, and that is much
+     better spent while the title screen is up than during a level load.
+     Bounded by the largest few entries and by whatever storage is free. */
+  var prefetching = false;
+  async function prefetchArchive() {
+    if (prefetching || !archive || params.get('noprefetch')) return;
+    prefetching = true;
+    var cache = await caches.open(CACHE_NAME);
+    var budget = 3 * 1024 * 1024 * 1024;
+    try {
+      var est = await navigator.storage.estimate();
+      if (est && est.quota && est.usage) {
+        budget = Math.min(budget, Math.max(0, est.quota - est.usage - 1024 * 1024 * 1024));
+      }
+    } catch (e) {}
+    var queue = archive.names.slice().sort(function (a, b) {
+      return archive.entries[b].raw - archive.entries[a].raw;
+    }).slice(0, PREFETCH_MAX);
+
+    var done = 0;
+    for (var i = 0; i < queue.length; i++) {
+      var name = queue[i];
+      var e = archive.entries[name];
+      if (done + e.raw > budget) { log('prefetch stops at ' + mb(done) + ' (storage budget)'); break; }
+      if (await cache.match(name)) { done += e.raw; continue; }
+      try {
+        await bundleFromArchive(name, cache);
+        done += e.raw;
+      } catch (err) {
+        log('prefetch stopped at ' + name + ': ' + ((err && err.message) || err));
+        break;
+      }
+    }
+    prefetching = false;
+    if (done) log('prefetch complete: ' + mb(done) + ' of bundles ready on demand');
+  }
+
+  /* Fetch override: addressables requests are answered from the Cache API,
+     and decoded out of the container if they are not there yet. */
+  (function installFetchOverride(){
+    var originalFetch = window.fetch;
+    window.fetch = async function(resource, options){
+      var url = typeof resource === "string" ? resource : (resource && resource.url) || "";
+      var cleanPath = url.split("/").pop().split("?")[0].split("#")[0];
+      try {
+        var cache = await caches.open(CACHE_NAME);
+        var cachedResponse = await cache.match(cleanPath);
+        if (cachedResponse) return cachedResponse;
+        if (archive && archive.entries[cleanPath]) {
+          return await bundleFromArchive(cleanPath, cache);
+        }
+      } catch(e){ log("archive fetch failed for " + cleanPath + ": " + ((e && e.message) || e)); }
+      return originalFetch(resource, options);
     };
     window._hkOriginalFetch = originalFetch;
   })();
-
-  async function mountAddressablesZip(aaSet) {
-    setStatus("Mounting addressables archive…");
-    var blob = aaSet && aaSet.file;
-    if (!blob && aaSet && aaSet.url) {
-      var res = await window._hkOriginalFetch.call(window, aaSet.url);
-      blob = await res.blob();
-    }
-    if (!blob) {
-      throw new Error("Addressables archive file handle is unavailable");
-    }
-    aaArchive = await HKAaZip.open(blob, {
-      reopenBlob: function () {
-        return HKStream.getFile(BUILD.aa.cacheKey);
-      },
-    });
-    log(
-      "addressables mounted in place: " +
-        aaArchive.count +
-        " bundles (" +
-        mb(aaArchive.totalUncompressed) +
-        " uncompressed) via " +
-        aaArchive.engine
-    );
-  }
 
   /* ---------------------------------------------------------------- *
    * Audio guard
@@ -1256,15 +1473,13 @@
       });
       if (info.error) rows.push(['cache error', info.error]);
     }
-    // Show OPFS ZIP streaming mount status
-    if (aaArchive) {
-      rows.push([
-        'addressables archive',
-        aaArchive.count + ' bundles · ' + mb(aaArchive.totalUncompressed) + ' (' + aaArchive.engine + ')',
-      ]);
-    } else {
-      rows.push(['addressables archive', 'not mounted yet']);
-    }
+    // also show Cache API status for addressables
+    try {
+      var c = await caches.open(CACHE_NAME);
+      var keys = await c.keys();
+      rows.push(['addressables cached', keys.length ? keys.length + ' bundles' : 'not yet']);
+      if (archive) rows.push(['container', archive.names.length + ' bundles, ' + mb(archive.size)]);
+    } catch(e){}
     var html = '';
     rows.forEach(function (r) {
       html += '<div class="row"><span>' + r[0] + '</span><span>' + r[1] + '</span></div>';
@@ -1339,7 +1554,7 @@
     toast('Reload to apply compatibility mode');
   });
   $('clearBtn').addEventListener('click', async function () {
-    aaArchive = null;
+    archive = null;
     var okDone = await HKStream.clearCache();
     await cleanupOldCaches();
     clearStage();
@@ -1893,14 +2108,6 @@
    * ---------------------------------------------------------------- */
   var booted = false, bootedAt = 0, currentStage = 'idle', unityInstance = null;
 
-  function onLoadProgress(p) {
-    var frac = p.total ? p.loaded / p.total : 0;
-    setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + '  (' + Math.round(frac * 100) + '%)');
-    setStatus(p.pass > 1 ? 'Downloading game data (retry ' + p.pass + ')' : 'Downloading game data — chunk ' + p.part + ' of ' + p.parts);
-    currentStage = 'download ' + Math.round(frac * 100) + '%';
-    markStage(currentStage);
-  }
-
   function datasetParts(spec) {
     if (spec.base) {
       return spec.partBytes.map(function (bytes, i) {
@@ -1938,6 +2145,7 @@
           buildId: BUILD.id,
           mime: spec.mime,
           workerUrl: 'hk-writer.js',
+          concurrency: spec.concurrency || 1,
           signal: controller ? controller.signal : undefined,
           onProgress: function (p) {
             lastProgress = Date.now();
@@ -2068,57 +2276,94 @@
 
       await cleanupOldCaches();
 
-      /* --- 2. the data chunks (Build) --- */
+      /* --- 2. all three datasets at once --------------------------------
+       * They used to run one after another, which left the connection idle
+       * for the length of each handshake + slow start and made the 15 MB of
+       * game data wait behind a 1.1 GB queue.  Now they share the link and
+       * the total wait is just "bytes / bandwidth". */
       currentStage = 'prepare data';
       markStage(currentStage);
-      var dataSet = await loadDatasetWithRetry(BUILD.data, onLoadProgress, 'game data');
-      log('data ready via ' + dataSet.kind + ': ' + mb(dataSet.size));
+
+      var gTotal = BUILD.data.total + BUILD.wasm.total + BUILD.aa.total;
+      var gLoaded = { data: 0, wasm: 0, aa: 0 };
+      function reportCombined() {
+        var loaded = gLoaded.data + gLoaded.wasm + gLoaded.aa;
+        var frac = gTotal ? loaded / gTotal : 0;
+        setProgress(frac, mb(loaded) + ' / ' + mb(gTotal) + '  (' + Math.round(frac * 100) + '%)');
+        setStatus('Downloading — ' + mb(loaded) + ' of ' + mb(gTotal) +
+                  (gLoaded.aa ? '  (content ' + mb(gLoaded.aa) + ')' : ''));
+        currentStage = 'download ' + Math.round(frac * 100) + '%';
+        markStage(currentStage);
+      }
+
+      var dataP = loadDatasetWithRetry(BUILD.data, function (p) {
+        gLoaded.data = p.loaded;
+        reportCombined();
+      }, 'game data').then(function (set) {
+        gLoaded.data = BUILD.data.total;
+        reportCombined();
+        log('data ready via ' + set.kind + ': ' + mb(set.size));
+        return set;
+      });
+
+      var wasmP = loadDatasetWithRetry(BUILD.wasm, function (p) {
+        gLoaded.wasm = p.loaded;
+        reportCombined();
+      }, 'game engine').then(function (set) {
+        gLoaded.wasm = BUILD.wasm.total;
+        reportCombined();
+        log('wasm ready via ' + set.kind + ': ' + mb(set.size));
+        return set;
+      });
+
+      var aaP = loadDatasetWithRetry(BUILD.aa, function (p) {
+        gLoaded.aa = p.loaded;
+        reportCombined();
+      }, 'addressables').then(function (set) {
+        gLoaded.aa = BUILD.aa.total;
+        reportCombined();
+        log('addressables ready via ' + set.kind + ': ' + mb(set.size));
+        return set;
+      });
+
+      // keep a rejection we have not awaited yet from being reported as
+      // unhandled while the other two downloads are still finishing
+      dataP.catch(function () {});
+      wasmP.catch(function () {});
+      aaP.catch(function () {});
+
+      var dataSet = await dataP;
+      var wasmSet = await wasmP;
+
       if (dataSet.kind === 'memory') {
         log('warning: no on-device storage available, data is held in RAM');
         setStatus('Warning: no on-device storage — this may fail');
         toast('No on-device storage available (private window?). Leave private browsing and reload.', 8000);
       }
 
-      /* --- 3. the wasm module --- */
-      currentStage = 'prepare wasm';
-      markStage(currentStage);
-      var wasmSet = await loadDatasetWithRetry(
-        BUILD.wasm,
-        function (p) {
-          var frac = p.total ? p.loaded / p.total : 0;
-          setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total));
-        },
-        'game engine'
-      );
-      log('wasm ready via ' + wasmSet.kind + ': ' + mb(wasmSet.size));
-
-      /* --- 3b. Addressables WebGL.zip (streamed to OPFS & mounted in place) --- */
       currentStage = 'prepare aa';
       markStage(currentStage);
-      function onAaProgress(p) {
-        var frac = p.total ? p.loaded / p.total : 0;
-        var pct = Math.round(frac * 100);
-        setProgress(frac, mb(p.loaded) + ' / ' + mb(p.total) + ' (aa ' + p.part + '/' + p.parts + ')');
-        setStatus(p.pass > 1 ? 'Downloading addressables (retry ' + p.pass + ')' : 'Downloading addressables — chunk ' + p.part + ' of ' + p.parts);
-        currentStage = 'download aa ' + pct + '%';
-        markStage(currentStage);
-      }
-      var aaSet = await loadDatasetWithRetry(BUILD.aa, onAaProgress, 'addressables');
-      log('addressables ready via ' + aaSet.kind + ': ' + mb(aaSet.size));
+      var aaSet = await aaP;
 
-      currentStage = 'mount aa';
-      markStage(currentStage);
+      // Read the container's footer + index.  Individual bundles are decoded
+      // on demand, so nothing waits for 1.24 GB to be unpacked any more.
+      setStatus('Indexing game content…');
       try {
-        await mountAddressablesZip(aaSet);
-      } catch (mountErr) {
-        logError('cached WebGL.zip was unreadable (' + ((mountErr && mountErr.message) || mountErr) + ') — clearing and re-downloading');
+        await installArchive(aaSet.file || aaSet.url);
+      } catch (indexErr) {
+        logError('cached container was unreadable (' + ((indexErr && indexErr.message) || indexErr) +
+                 ') — clearing it and downloading again');
         try { aaSet.dispose(); } catch (e) {}
-        await HKStream.clearCache();
-        dataSet = await loadDatasetWithRetry(BUILD.data, onLoadProgress, 'game data');
-        wasmSet = await loadDatasetWithRetry(BUILD.wasm, null, 'game engine');
-        aaSet = await loadDatasetWithRetry(BUILD.aa, onAaProgress, 'addressables');
-        await mountAddressablesZip(aaSet);
+        for (var staleName of [BUILD.aa.cacheKey, BUILD.aa.cacheKey + '.ok', BUILD.aa.cacheKey + '.building']) {
+          await HKStream.dropEntry(staleName);
+        }
+        aaSet = await loadDatasetWithRetry(BUILD.aa, null, 'addressables');
+        await installArchive(aaSet.file || aaSet.url);
       }
+      // Start warming the biggest bundles while Unity boots: one decode at a
+      // time, so the second worker is always free for something the game asks
+      // for right now.
+      setTimeout(prefetchArchive, 1000);
 
       /* --- 4. Unity --- */
       setStatus('Starting the game…');

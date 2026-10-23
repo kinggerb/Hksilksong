@@ -519,9 +519,18 @@
           startOffset = reopened.canResume ? reopened.size : 0;
         }
 
-        var accounted = 0;
+        // Parts are independent and the sink writes at an absolute offset, so
+        // several can be in flight at once.  One TCP stream never fills the
+        // pipe on its own: latency + slow-start leave the link idle between
+        // chunks.  A small pool keeps ~concurrency * BDP bytes in flight.
+        var conc = Math.max(1, Math.min(opts.concurrency || 1, parts.length));
+        if (sink.sequentialOnly) conc = 1; // memory sink: only ordered writes work
+
         var lastReport = 0;
         var currentPart = 0;
+        var doneBytes = 0; // bytes already on disk (skipped + finished parts)
+        var live = {}; // part index -> bytes written by the running attempt
+        var liveBytes = 0;
 
         function report(force) {
           if (!opts.onProgress) return;
@@ -529,7 +538,7 @@
           if (!force && t - lastReport < PROGRESS_THROTTLE) return;
           lastReport = t;
           opts.onProgress({
-            loaded: Math.min(accounted, total),
+            loaded: Math.min(doneBytes + liveBytes, total),
             total: total,
             part: currentPart,
             parts: parts.length,
@@ -537,48 +546,73 @@
           });
         }
 
-        function makeAdvance(prog, base) {
-          return function () {
-            accounted = base + prog.written;
-            report(false);
-          };
-        }
-
+        var queue = [];
         for (i = 0; i < parts.length; i++) {
-          var p = parts[i];
-          currentPart = i + 1;
-
-          if (p.offset + p.bytes <= startOffset) {
-            accounted = p.offset + p.bytes;
-            report(true);
+          if (parts[i].offset + parts[i].bytes <= startOffset) {
+            doneBytes += parts[i].bytes;
             continue;
           }
+          queue.push(i);
+        }
+        currentPart = parts.length - queue.length;
+        report(true);
 
-          var skip = Math.max(0, startOffset - p.offset);
-          var progress = { written: 0 };
-          var baseForPart = p.offset + skip;
-          var onAdvance = makeAdvance(progress, baseForPart);
+        var nextPart = 0;
+        var failure = null;
 
-          await fetchPartTo({
-            url: p.url,
-            bytes: p.bytes,
-            index: currentPart,
-            sink: sink,
-            partOffset: p.offset,
-            skip: skip,
-            signal: opts.signal,
-            fetchImpl: fetchImpl,
-            log: opts.log,
-            progress: progress,
-            onAdvance: onAdvance,
-          });
+        async function worker() {
+          try {
+            for (;;) {
+              if (failure) return;
+              if (opts.signal && opts.signal.aborted) throw abortError();
+              var slot = nextPart++;
+              if (slot >= queue.length) return;
 
-          accounted = p.offset + p.bytes;
-          report(true);
+              var idx = queue[slot];
+              var p = parts[idx];
+              var skip = Math.max(0, startOffset - p.offset);
+              var progress = { written: 0 };
+              live[idx] = 0;
+              var onAdvance = (function (index, prog) {
+                return function () {
+                  liveBytes += prog.written - live[index];
+                  live[index] = prog.written;
+                  report(false);
+                };
+              })(idx, progress);
+
+              await fetchPartTo({
+                url: p.url,
+                bytes: p.bytes,
+                index: idx + 1,
+                sink: sink,
+                partOffset: p.offset,
+                skip: skip,
+                signal: opts.signal,
+                fetchImpl: fetchImpl,
+                log: opts.log,
+                progress: progress,
+                onAdvance: onAdvance,
+              });
+
+              liveBytes -= live[idx] || 0;
+              delete live[idx];
+              doneBytes += p.bytes - skip;
+              currentPart++;
+              report(true);
+            }
+          } catch (err) {
+            if (!failure) failure = err;
+          }
         }
 
+        var pool = [];
+        for (i = 0; i < conc; i++) pool.push(worker());
+        await Promise.all(pool);
+        if (failure) throw failure;
+
         report(true);
-        return { total: total };
+        return { total: total, concurrency: conc };
       } catch (err) {
         if (err && err.name === 'AbortError') throw err;
         lastErr = err;
@@ -837,6 +871,7 @@
       fetchImpl: opts.fetchImpl,
       signal: opts.signal,
       log: opts.onLog,
+      concurrency: opts.concurrency,
     });
 
     var done = await sink.finish();
@@ -901,6 +936,18 @@
     }
   }
 
+  /** Delete one file from the on-device cache (used to drop superseded datasets). */
+  async function dropEntry(name, dirName) {
+    try {
+      var root = await navigator.storage.getDirectory();
+      var dir = await root.getDirectoryHandle(dirName || DEFAULT_DIR, { create: false });
+      await dir.removeEntry(name);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async function cacheInfo(dirName) {
     var out = { entries: [], bytes: 0 };
     try {
@@ -936,6 +983,7 @@
       return getFileFromOpfs(dirName || DEFAULT_DIR, name);
     },
     clearCache: clearCache,
+    dropEntry: dropEntry,
     cacheInfo: cacheInfo,
     mb: mb,
     _internals: {
