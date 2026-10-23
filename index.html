@@ -218,6 +218,7 @@
   <div id="logbox"></div>
 </div>
 
+<script src="hk-aa-zip.js"></script>
 <script src="hk-stream.js"></script>
 <script src="hk-save-codec.js"></script>
 <script>
@@ -271,7 +272,7 @@
     },
   };
 
-  var FALLBACK_BASE = 'https://cdn.jsdelivr.net/gh/web-ports/hollow-knight-silksong@master/';
+  var FALLBACK_BASE = 'https://cdn.jsdelivr.net/gh/kinggerb/Hksilksong@main/';
   var params = new URLSearchParams(location.search);
   var ASSET_BASE = params.get('base') || '';
   var useRewriter = false;
@@ -402,12 +403,15 @@
 
   async function cleanupOldCaches() {
     try {
+      if (typeof caches === "undefined" || !caches.keys) return;
       var cacheNames = await caches.keys();
-      await Promise.all(cacheNames.map(function(name){
-        if (name !== CACHE_NAME && name.includes("hksilksong")) {
-          log("Deleting old cache: " + name);
+      await Promise.all(cacheNames.map(function (name) {
+        if (name !== CACHE_NAME &&
+            (name.indexOf("hksilksong") !== -1 || name.indexOf("UnityCache") === 0)) {
+          log("Deleting redundant cache store: " + name);
           return caches.delete(name);
         }
+        return Promise.resolve();
       }));
     } catch(e){}
     // the 1.24 GB zip and its extraction marker are dead weight now
@@ -1130,27 +1134,6 @@
     } catch (e) {
       logError('UnloadUnusedAssets failed: ' + ((e && e.message) || e));
     }
-    var table = Module.asm.Zi;
-    if (table && typeof table.get === 'function') {
-      try {
-        var unloadUnusedAssets = table.get(46728);
-        if (typeof unloadUnusedAssets === 'function') {
-          unloadUnusedAssets(0);
-          ran = true;
-        }
-      } catch (e) {
-        logError('Resources.UnloadUnusedAssets (wasmTable 46728) failed: ' + ((e && e.message) || e));
-      }
-      try {
-        var gcCollect = table.get(56071);
-        if (typeof gcCollect === 'function') {
-          gcCollect(0);
-          ran = true;
-        }
-      } catch (e) {
-        logError('System.GC.Collect (wasmTable 56071) failed: ' + ((e && e.message) || e));
-      }
-    }
     if (ran) log('memory cleanup: ran GC / UnloadUnusedAssets');
     return ran;
   }
@@ -1193,7 +1176,7 @@
    * ---------------------------------------------------------------- */
   var sessionStart = 0;
   var heartbeatTimer = 0;
-  var DATA_MB = 1099; // addressables container + build data
+  var DATA_MB = 45; // unpacked w-pt.data in MEMFS (WebGL.zip stays on OPFS disk)
 
   function unityModule() {
     var inst = unityInstance || (typeof window !== 'undefined' ? window.unityInstance : null);
@@ -1205,6 +1188,7 @@
       if (m) {
         if (m.HEAPU8 && m.HEAPU8.length) return Math.round(m.HEAPU8.length / 1048576);
         if (m.wasmMemory && m.wasmMemory.buffer) return Math.round(m.wasmMemory.buffer.byteLength / 1048576);
+        if (m.asm && m.asm.Kk && m.asm.Kk.buffer) return Math.round(m.asm.Kk.buffer.byteLength / 1048576);
         if (m.asm && m.asm.Ai && m.asm.Ai.buffer) return Math.round(m.asm.Ai.buffer.byteLength / 1048576);
       }
     } catch (e) {}
@@ -1219,15 +1203,21 @@
     if (died) {
       return {
         warn: Math.round(died * 0.80),
-        alarm: Math.round(died * 0.95),
+        alarm: Math.max(1200, Math.round(died * 0.94)),
         crashHeap: died,
         learned: true,
       };
     }
-    return { warn: 1000, alarm: 1400, crashHeap: null, learned: false };
+    return { warn: 1800, alarm: 2600, crashHeap: null, learned: false };
   }
 
-  var HARD_MEMORY_CAP_MB = 1400;
+  var explicitMemCap = parseInt(params.get('memcap') || '', 10);
+  var HARD_MEMORY_CAP_MB = isFinite(explicitMemCap) && explicitMemCap > 0 ? explicitMemCap : 2600;
+  function effectiveMemoryCapMB() {
+    if (isFinite(explicitMemCap) && explicitMemCap > 0) return explicitMemCap;
+    var limits = memoryLimits();
+    return limits.learned ? limits.alarm : HARD_MEMORY_CAP_MB;
+  }
   var memCapTimer = 0;
   var memCapSeconds = 0;
 
@@ -1246,10 +1236,11 @@
     }
   }
 
-  function startMemoryCapReload(heap) {
+  function startMemoryCapReload(heap, cap) {
     if (memCapTimer) return;
+    cleanupMemory();
     memCapSeconds = 5;
-    log('hard memory cap reached (' + heap + ' MB > ' + HARD_MEMORY_CAP_MB + ' MB) — reloading in 5s');
+    log('hard memory cap reached (' + heap + ' MB > ' + (cap || effectiveMemoryCapMB()) + ' MB) — reloading in 5s');
     updateMemCapCorner();
     memCapTimer = setInterval(function () {
       memCapSeconds--;
@@ -1281,8 +1272,9 @@
       visible: !document.hidden,
     };
     writeStore(HEARTBEAT_KEY, JSON.stringify(hb));
-    if (booted && hb.heap !== null && hb.heap > HARD_MEMORY_CAP_MB) {
-      startMemoryCapReload(hb.heap);
+    var cap = effectiveMemoryCapMB();
+    if (booted && hb.heap !== null && hb.heap > cap) {
+      startMemoryCapReload(hb.heap, cap);
     }
     return hb;
   }
@@ -1562,8 +1554,9 @@
     toast('Reload to apply compatibility mode');
   });
   $('clearBtn').addEventListener('click', async function () {
+    archive = null;
     var okDone = await HKStream.clearCache();
-    try { await caches.delete(CACHE_NAME); } catch(e){}
+    await cleanupOldCaches();
     clearStage();
     toast(okDone ? 'Cached game data deleted — reload and it will download again' : 'Nothing to delete');
     refreshStoreRows();
@@ -2177,6 +2170,95 @@
     throw lastErr || new Error('could not load ' + label);
   }
 
+  function makeStreamingWasmInstantiator(wasmSet, onFail) {
+    return function instantiateWasm(imports, receiveInstance) {
+      (async function () {
+        var blob = wasmSet && wasmSet.file;
+        if (!blob && wasmSet && wasmSet.url) {
+          var fetched = await window._hkOriginalFetch.call(window, wasmSet.url);
+          blob = await fetched.blob();
+        }
+        if (!blob) throw new Error('WASM binary blob unavailable');
+
+        var hdr = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+        var isGzip = hdr.length >= 2 && hdr[0] === 0x1f && hdr[1] === 0x8b;
+
+        if (typeof WebAssembly.instantiateStreaming === 'function' && (!isGzip || typeof DecompressionStream === 'function')) {
+          try {
+            var pos = 0;
+            var end = blob.size;
+            var chunkStream = new ReadableStream({
+              pull: async function (controller) {
+                if (pos >= end) { controller.close(); return; }
+                var next = Math.min(end, pos + 262144);
+                var ab = await blob.slice(pos, next).arrayBuffer();
+                pos = next;
+                controller.enqueue(new Uint8Array(ab));
+              },
+            });
+            var wasmStream = isGzip ? chunkStream.pipeThrough(new DecompressionStream('gzip')) : chunkStream;
+            var streamed = await WebAssembly.instantiateStreaming(
+              new Response(wasmStream, { headers: { 'Content-Type': 'application/wasm' } }),
+              imports
+            );
+            receiveInstance(streamed.instance, streamed.module);
+            return;
+          } catch (streamErr) {
+            log('wasm streaming compile fallback: ' + ((streamErr && streamErr.message) || streamErr));
+          }
+        }
+
+        // Fallback for older browsers without DecompressionStream / instantiateStreaming
+        var wasmBytes;
+        if (!isGzip) {
+          wasmBytes = new Uint8Array(await blob.arrayBuffer());
+        } else {
+          var headBuf = new Uint8Array(await blob.slice(0, Math.min(blob.size, 4096)).arrayBuffer());
+          var flg = headBuf[3];
+          var off = 10;
+          if (flg & 0x04) off += 2 + (headBuf[off] | (headBuf[off + 1] << 8));
+          if (flg & 0x08) { while (off < headBuf.length && headBuf[off] !== 0) off++; off++; }
+          if (flg & 0x10) { while (off < headBuf.length && headBuf[off] !== 0) off++; off++; }
+          if (flg & 0x02) off += 2;
+          var defPos = off;
+          var defEnd = blob.size - 8; // strip 8-byte CRC32+ISIZE trailer
+          var rawSrc = new ReadableStream({
+            pull: async function (controller) {
+              if (defPos >= defEnd) { controller.close(); return; }
+              var next = Math.min(defEnd, defPos + 262144);
+              var ab = await blob.slice(defPos, next).arrayBuffer();
+              defPos = next;
+              controller.enqueue(new Uint8Array(ab));
+            },
+          });
+          var reader = HKAaZip._internals.createJsRawInflateStream(rawSrc).getReader();
+          var parts = [];
+          var totalLen = 0;
+          for (;;) {
+            var r = await reader.read();
+            if (r.done) break;
+            parts.push(r.value);
+            totalLen += r.value.byteLength;
+          }
+          wasmBytes = new Uint8Array(totalLen);
+          var writeAt = 0;
+          for (var i = 0; i < parts.length; i++) {
+            wasmBytes.set(parts[i], writeAt);
+            writeAt += parts[i].byteLength;
+            parts[i] = null;
+          }
+        }
+        var compiled = await WebAssembly.instantiate(wasmBytes, imports);
+        wasmBytes = null;
+        receiveInstance(compiled.instance, compiled.module);
+      })().catch(function (err) {
+        logError('instantiateWasm failed: ' + ((err && err.message) || err));
+        if (onFail) onFail(err);
+      });
+      return {};
+    };
+  }
+
   async function loadAndBoot() {
     try {
       setStatus('Checking device storage…');
@@ -2266,7 +2348,18 @@
       // Read the container's footer + index.  Individual bundles are decoded
       // on demand, so nothing waits for 1.24 GB to be unpacked any more.
       setStatus('Indexing game content…');
-      await installArchive(aaSet.file || aaSet.url);
+      try {
+        await installArchive(aaSet.file || aaSet.url);
+      } catch (indexErr) {
+        logError('cached container was unreadable (' + ((indexErr && indexErr.message) || indexErr) +
+                 ') — clearing it and downloading again');
+        try { aaSet.dispose(); } catch (e) {}
+        for (var staleName of [BUILD.aa.cacheKey, BUILD.aa.cacheKey + '.ok', BUILD.aa.cacheKey + '.building']) {
+          await HKStream.dropEntry(staleName);
+        }
+        aaSet = await loadDatasetWithRetry(BUILD.aa, null, 'addressables');
+        await installArchive(aaSet.file || aaSet.url);
+      }
       // Start warming the biggest bundles while Unity boots: one decode at a
       // time, so the second worker is always free for something the game asks
       // for right now.
@@ -2279,6 +2372,9 @@
       setProgress(0, '');
       await loadScript(abs(BUILD.loader));
 
+      var rejectBoot = null;
+      var wasmFailed = new Promise(function (_, rej) { rejectBoot = rej; });
+
       var config = {
         dataUrl: dataSet.url,
         frameworkUrl: abs(BUILD.framework),
@@ -2287,6 +2383,8 @@
         companyName: "Team Cherry",
         productName: "Hollow Knight SilkSong",
         productVersion: "1.0",
+        cacheControl: function () { return 'no-store'; },
+        instantiateWasm: makeStreamingWasmInstantiator(wasmSet, rejectBoot),
         // memory settings similar to HK — let wasm declare its own heap
         webglContextAttributes: {
           alpha: false,
@@ -2304,13 +2402,16 @@
         onAbort: function (what) { logError('unity abort: ' + what); },
       };
 
-      var instance = await window.createUnityInstance(canvas, config, function (progress) {
-        var pct = Math.round(progress * 100);
-        setStatus('Loading into memory — ' + pct + '%');
-        setProgress(progress, pct + '%');
-        currentStage = 'unity memory ' + pct + '%';
-        if (pct % 10 === 0) markStage(currentStage);
-      });
+      var instance = await Promise.race([
+        window.createUnityInstance(canvas, config, function (progress) {
+          var pct = Math.round(progress * 100);
+          setStatus('Loading into memory — ' + pct + '%');
+          setProgress(progress, pct + '%');
+          currentStage = 'unity memory ' + pct + '%';
+          if (pct % 10 === 0) markStage(currentStage);
+        }),
+        wasmFailed,
+      ]);
       unityInstance = instance;
       window.unityInstance = instance;
 

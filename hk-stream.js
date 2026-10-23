@@ -358,9 +358,11 @@
   };
 
   MemorySink.prototype.finish = function () {
-    var blob = new Blob([this.buffer], { type: this.mime });
+    var buf = this.buffer;
+    this.buffer = null;
+    var blob = new Blob([buf], { type: this.mime });
     this.url = URL.createObjectURL(blob);
-    return Promise.resolve({ size: this.buffer.byteLength, url: this.url });
+    return Promise.resolve({ size: blob.size, url: this.url, blob: blob });
   };
 
   MemorySink.prototype.abort = function () {
@@ -727,7 +729,7 @@
       kind: 'memory',
       url: memDone.url,
       size: memDone.size,
-      file: null,
+      file: memDone.blob || null,
       sink: memSink,
     });
   }
@@ -977,6 +979,9 @@
     detect: detect,
     requestPersistence: requestPersistence,
     ensureDataset: ensureDataset,
+    getFile: function (name, dirName) {
+      return getFileFromOpfs(dirName || DEFAULT_DIR, name);
+    },
     clearCache: clearCache,
     dropEntry: dropEntry,
     cacheInfo: cacheInfo,
