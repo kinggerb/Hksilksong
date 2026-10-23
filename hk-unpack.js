@@ -26,7 +26,9 @@ self.onmessage = function (e) {
   var job = e.data || {};
   handle(job).then(
     function (out) {
-      self.postMessage({ id: job.id, ok: true, size: out.size, cached: out.cached }, out.buf ? [out.buf] : []);
+      var msg = { id: job.id, ok: true, size: out.size, cached: out.cached };
+      if (out.buf) msg.buf = out.buf; // transferred, not copied
+      self.postMessage(msg, out.buf ? [out.buf] : []);
     },
     function (err) {
       self.postMessage({ id: job.id, ok: false, error: String((err && err.message) || err) });
@@ -37,27 +39,32 @@ self.onmessage = function (e) {
 async function handle(job) {
   if (!XzReadableStream) throw new Error('xz decoder failed to load');
 
-  var blob = job.file.slice(job.off, job.off + job.comp);
-  var source = blob.stream ? blob.stream() : new Response(blob).body;
-  var buf = await new Response(new XzReadableStream(source)).arrayBuffer();
+  var headers = {
+    'Content-Type': 'application/octet-stream',
+    'X-HK-Bundle': job.name,
+  };
 
+  // First choice: stream the decoded bundle straight into the Cache API.  On
+  // iOS the big bundles are 200-500 MB, and this never holds one in the JS
+  // heap - liblzma fills the stream and the cache pulls it a chunk at a time.
+  try {
+    var cache = await caches.open(job.cacheName);
+    await cache.put(job.name, new Response(decodeStream(job), { headers: headers }));
+    return { size: job.raw, cached: true };
+  } catch (e) {
+    /* no Cache API in this worker, or the stream died - fall through */
+  }
+
+  // Fallback: materialise the bundle and hand it back to the page.
+  var buf = await new Response(decodeStream(job)).arrayBuffer();
   if (job.raw && buf.byteLength !== job.raw) {
     throw new Error('decoded ' + buf.byteLength + ' bytes, expected ' + job.raw);
   }
+  return { size: buf.byteLength, cached: false, buf: buf };
+}
 
-  try {
-    var cache = await caches.open(job.cacheName);
-    await cache.put(
-      job.name,
-      new Response(buf, {
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'X-HK-Bundle': job.name,
-        },
-      })
-    );
-    return { size: buf.byteLength, cached: true };
-  } catch (e) {
-    return { size: buf.byteLength, cached: false, buf: buf };
-  }
+function decodeStream(job) {
+  var blob = job.file.slice(job.off, job.off + job.comp);
+  var source = blob.stream ? blob.stream() : new Response(blob).body;
+  return new XzReadableStream(source);
 }
